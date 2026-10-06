@@ -145,6 +145,11 @@ def _env_bool(name: str, default: bool) -> bool:
 class Settings:
     """All runtime configuration, resolved once at import time from the environment / .env."""
 
+    # --- LLM provider -------------------------------------------------------
+    # "claude" = agents 1-3 on Claude, agent 4 on Ollama. "ollama" = every agent on Ollama
+    # (no Anthropic key needed, no cloud cost). See SETUP-ollama-only.md.
+    llm_provider: str = field(default_factory=lambda: _env_str("LLM_PROVIDER", "claude").lower())
+
     # --- Cloud LLM (Claude) -------------------------------------------------
     anthropic_api_key: str = field(default_factory=lambda: _env_str("ANTHROPIC_API_KEY"))
     # Per-agent routing (see AGENT_ROUTES): model id, effort and output cap per task.
@@ -174,6 +179,12 @@ class Settings:
     ollama_base_url: str = field(default_factory=lambda: _env_str("OLLAMA_BASE_URL", "http://localhost:11434/v1"))
     ollama_model: str = field(default_factory=lambda: _env_str("OLLAMA_MODEL", "qwen2.5-coder:7b"))
     ollama_timeout_s: int = field(default_factory=lambda: _env_int("OLLAMA_TIMEOUT_SECONDS", 300))
+    # Used only when LLM_PROVIDER=ollama: optional per-agent model overrides (default OLLAMA_MODEL)
+    # and the output cap per call (small local models loop if left unbounded).
+    ollama_triage_model: str = field(default_factory=lambda: _env_str("OLLAMA_TRIAGE_MODEL"))
+    ollama_architect_model: str = field(default_factory=lambda: _env_str("OLLAMA_ARCHITECT_MODEL"))
+    ollama_automation_model: str = field(default_factory=lambda: _env_str("OLLAMA_AUTOMATION_MODEL"))
+    ollama_max_tokens: int = field(default_factory=lambda: _env_int("OLLAMA_MAX_TOKENS", 4096))
 
     # --- TypeScript test repository ----------------------------------------
     github_token: str = field(default_factory=lambda: _env_str("GITHUB_TOKEN"))
@@ -216,6 +227,9 @@ class Settings:
 
 
 SETTINGS = Settings()
+if SETTINGS.llm_provider not in {"claude", "ollama"}:
+    raise SystemExit(f"LLM_PROVIDER must be 'claude' or 'ollama', got {SETTINGS.llm_provider!r}")
+USE_OLLAMA_ONLY = SETTINGS.llm_provider == "ollama"
 
 
 # =============================================================================
@@ -373,6 +387,8 @@ if SETTINGS.claude_pricing_json:
 
 def price_cents(model: str, usage: TokenUsage) -> float:
     """Exact (fractional) cost of one call in US cents, pricing each cache tier separately."""
+    if USE_OLLAMA_ONLY:
+        return 0.0  # local models are free; don't price them like the dearest Claude model
     prices = MODEL_PRICING.get(model) or MODEL_PRICING.get(re.sub(r"-\d{8}$", "", model))
     if prices is None:
         # Unknown model: price it like the most expensive known model rather than as free.
@@ -791,7 +807,7 @@ class TokenBudget:
             run_total, day_total = self._run_usage[run_id], self._day_usage
         self._control_room.emit(
             run_id, ticket_id, "llm.usage",
-            agent=agent, provider="anthropic", model=model, billing_type="metered_api",
+            agent=agent, provider="ollama" if USE_OLLAMA_ONLY else "anthropic", model=model, billing_type="metered_api",
             # Paperclip's ledger: inputTokens = billed-at-full-or-write-rate, cached = cache reads.
             input_tokens=usage.input_tokens - usage.cache_read_tokens,
             cached_input_tokens=usage.cache_read_tokens,
@@ -866,13 +882,22 @@ AGENT_ROUTES: Dict[str, AgentRoute] = {
                              SETTINGS.claude_automation_effort, SETTINGS.claude_automation_max_tokens,
                              _cache_enabled("automation")),
 }
+if USE_OLLAMA_ONLY:
+    # Same three agents, all on Ollama. Effort and prompt caching are Claude features.
+    _ollama_models = {"triage": SETTINGS.ollama_triage_model, "architect": SETTINGS.ollama_architect_model,
+                      "automation": SETTINGS.ollama_automation_model}
+    AGENT_ROUTES = {
+        key: AgentRoute(key, route.label, _ollama_models[key] or SETTINGS.ollama_model, "n/a",
+                        SETTINGS.ollama_max_tokens, False)
+        for key, route in AGENT_ROUTES.items()
+    }
 
 
 _VALID_EFFORTS = {"low", "medium", "high", "xhigh", "max"}
 if SETTINGS.prompt_cache_ttl not in {"5m", "1h"}:
     logging.getLogger("qa.config").warning("PROMPT_CACHE_TTL=%r is not '5m' or '1h' - using 5m.",
                                           SETTINGS.prompt_cache_ttl)
-for _route in AGENT_ROUTES.values():
+for _route in ([] if USE_OLLAMA_ONLY else AGENT_ROUTES.values()):
     if _route.effort not in _VALID_EFFORTS:
         logging.getLogger("qa.config").warning(
             "CLAUDE_%s_EFFORT=%r is not one of %s - the API will reject it.",
@@ -884,11 +909,21 @@ for _route in AGENT_ROUTES.values():
 
 
 @functools.lru_cache(maxsize=None)
-def claude_llm(route_key: str) -> ChatAnthropic:
-    """One client per agent route. Cloud 'analytical brain' used by agents 1-3."""
+def claude_llm(route_key: str) -> Any:
+    """One client per agent route. Cloud 'analytical brain' used by agents 1-3 (Ollama if LLM_PROVIDER=ollama)."""
+    route = AGENT_ROUTES[route_key]
+    if USE_OLLAMA_ONLY:
+        return ChatOpenAI(
+            model=route.model,
+            base_url=SETTINGS.ollama_base_url,
+            api_key="ollama",
+            temperature=0.0,
+            max_tokens=route.max_tokens,
+            timeout=SETTINGS.ollama_timeout_s,
+            max_retries=1,
+        )
     if not SETTINGS.anthropic_api_key:
         raise RuntimeError("ANTHROPIC_API_KEY is not configured.")
-    route = AGENT_ROUTES[route_key]
     # No temperature/top_p: Claude 5.x models think adaptively (always on for Opus 5.5)
     # and depth is steered with `effort` instead.
     return ChatAnthropic(
@@ -937,7 +972,10 @@ def context_message(route_key: str, text: str) -> HumanMessage:
 
 
 def _check_stop_reason(route: AgentRoute, message: Any) -> None:
-    stop_reason = (getattr(message, "response_metadata", None) or {}).get("stop_reason")
+    metadata = getattr(message, "response_metadata", None) or {}
+    stop_reason = metadata.get("stop_reason")
+    if metadata.get("finish_reason") == "length":  # OpenAI-compatible servers (Ollama)
+        stop_reason = "max_tokens"
     if stop_reason == "refusal":
         raise LLMOutputError(f"{route.label}: {route.model} declined the request (stop_reason=refusal).")
     if stop_reason == "max_tokens":
@@ -1530,6 +1568,10 @@ def agent_node(name: str, engine: str, abort_on_error: bool) -> Callable:
       * converts BudgetExceededError and unexpected exceptions into state errors
         instead of crashing the graph.
     """
+
+    # In Ollama-only mode the cloud agents run locally, so don't label them "claude".
+    if USE_OLLAMA_ONLY:
+        engine = engine.replace("claude", "ollama")
 
     def decorator(fn: Callable[[QAState], Dict[str, Any]]) -> Callable[[QAState], Dict[str, Any]]:
         @functools.wraps(fn)
@@ -2143,6 +2185,7 @@ def health() -> Dict[str, Any]:
         },
         "prompt_cache_ttl": SETTINGS.prompt_cache_ttl,
         "spec_repair_attempts": SETTINGS.spec_repair_attempts,
+        "llm_provider": SETTINGS.llm_provider,
         "claude_configured": bool(SETTINGS.anthropic_api_key),
         "ollama": {"base_url": SETTINGS.ollama_base_url, "model": SETTINGS.ollama_model},
         "test_repo": {

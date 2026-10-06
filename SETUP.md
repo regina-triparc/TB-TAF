@@ -3,6 +3,8 @@
 Step-by-step setup of the full stack on a MacBook: the QA service, Ollama, the Playwright test repo, Paperclip and n8n, wired to Jira, GitHub and Xray.
 
 > **On Windows?** Follow [SETUP-windows.md](SETUP-windows.md) instead.
+>
+> **No Anthropic key, or want everything local?** Apply the changes in [SETUP-ollama-only.md](SETUP-ollama-only.md) on top of this guide.
 
 Do the steps in order. Each phase ends with a **✅ Check** — don't move on until it passes.
 

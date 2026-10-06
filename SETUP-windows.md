@@ -4,6 +4,8 @@ The same stack as [SETUP.md](SETUP.md), on **Windows 10 or 11**, using native Wi
 
 Phases 1–5 are specific to Windows and are written out in full below. Phases 6–9 (n8n, Jira and Xray) happen in the browser and are the same on every OS, so this guide sends you to `SETUP.md` for those and gives PowerShell versions of the few terminal commands they use.
 
+> **Ollama only (no Claude)?** Apply [SETUP-ollama-only.md](SETUP-ollama-only.md) on top of this guide.
+
 Do the phases in order. Each phase ends with a **✅ Check** — don't move on until it passes.
 
 > **Use Windows Terminal with PowerShell tabs.** You'll keep four processes running, one per tab: Ollama (tray app), the QA service, Paperclip and n8n.
@@ -278,6 +280,8 @@ For problems that aren't specific to Windows, see [SETUP.md → Troubleshooting]
 | Symptom | Cause / fix |
 |---|---|
 | `pnpm : ... running scripts is disabled on this system` | Run step 1.1 (`Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`), then open a new tab. |
+| `npm warn install-scripts ... not yet covered by allowScripts` after `npm install -g pnpm` | A warning, not an error. Newer npm blocks package install scripts by default. Check with `pnpm --version`; if that works, ignore it. If pnpm is missing, re-run `npm install -g --allow-scripts=pnpm pnpm`. |
+| `Set-ExecutionPolicy ... overridden by a policy defined at a more specific scope` | Group policy or the current process already sets a policy. Harmless as long as `Get-ExecutionPolicy` reports `RemoteSigned`, `Unrestricted` or `Bypass`. |
 | `py` or `node` is not recognized | The terminal was opened before the install. Close all Windows Terminal windows and reopen. |
 | Report says `pnpm is not installed or not on PATH` | uvicorn was started in a tab that predates the pnpm install. Restart it from a new tab. |
 | `Filename too long` during git clone or `pnpm install` | Run step 1.6 (`core.longpaths`) and keep `TEST_REPO_LOCAL_PATH` short, for example `C:/qa-agent/...`. |
