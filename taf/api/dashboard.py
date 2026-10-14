@@ -37,6 +37,8 @@ class StartRequest(BaseModel):
     target_url: str = ""
     # Per-run router override: claude | ollama | auto | offline. Empty = current default.
     provider: str = ""
+    # jira | seed | auto. Empty = TICKET_SOURCE.
+    source: str = ""
 
 
 class ProviderRequest(BaseModel):
@@ -78,6 +80,7 @@ def board() -> JSONResponse:
         "jira_configured": jira["configured"],
         "jira_reason": jira["reason"],
         "jira_fetched_at": jira["fetched_at"],
+        "ticket_source": jira["source"],
         "stages": list(stages.STAGE_NODES),
         # Per-agent, so a hybrid run shows which agent runs where.
         "provider": "+".join(sorted({r.provider for r in routes.values()})),
@@ -95,7 +98,7 @@ def start(req: StartRequest) -> Dict[str, Any]:
         if req.provider:
             ROUTER.resolve(req.provider)  # validate before anything is recorded
         state = stages.prepare(req.ticket_id, req.stage, summary=req.summary, description=req.description,
-                               target_url=req.target_url, provider=req.provider)
+                               target_url=req.target_url, provider=req.provider, source=req.source)
     except stages.StageError as exc:
         raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
     except ValueError as exc:

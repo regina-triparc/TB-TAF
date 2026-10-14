@@ -10,6 +10,7 @@ from taf.agents.schemas import TriageAnalysis
 from taf.agents.state import QAState
 from taf.config import SETTINGS
 from taf.core.text import truncate_middle
+from taf.integrations.github.pull_requests import diff_for_prompt
 from taf.integrations.paperclip.control_room import CONTROL_ROOM
 from taf.llm.router import ROUTER
 from taf.skills import skills_prompt
@@ -28,8 +29,8 @@ Your job:
 Be specific and grounded in the provided material; never invent features that are not in the ticket or diff."""
 
 
-def build_prompt(state: QAState) -> str:
-    diff = truncate_middle(state.get("github_diff", ""), SETTINGS.max_diff_chars) or "(no diff provided)"
+def build_prompt(state: QAState, provider: str = "claude") -> str:
+    diff = diff_for_prompt(state, 1.0, provider) or "(no diff provided)"
     env_logs = truncate_middle(state.get("environment_logs", ""), SETTINGS.max_env_log_chars) or "(no logs provided)"
     return f"""# Jira ticket {state['ticket_id']}
 ## Summary
@@ -58,7 +59,7 @@ def intake_triager(state: QAState) -> Dict[str, Any]:
     system = SYSTEM_PROMPT + skills_prompt("triage", route.provider)
     analysis = ROUTER.structured(
         state, route,
-        [SystemMessage(content=system), ROUTER.context_message(route, build_prompt(state))],
+        [SystemMessage(content=system), ROUTER.context_message(route, build_prompt(state, route.provider))],
         TriageAnalysis,
     )
     CONTROL_ROOM.emit(state["run_id"], state["ticket_id"], "triage.completed",

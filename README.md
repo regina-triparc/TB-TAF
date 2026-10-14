@@ -72,10 +72,11 @@ Pick a model, then run the same command without `--provider offline`:
 | an Anthropic API key | `ANTHROPIC_API_KEY=...` (`LLM_PROVIDER=auto` then picks Claude) | `python -m taf run TB-601` |
 | Ollama | nothing (`auto` with no key means Ollama); run `ollama pull qwen2.5-coder:7b` and `ollama serve` | `python -m taf run TB-601` |
 
-To also **execute** the generated spec, point the service at a Playwright project
-on your machine (`TEST_REPO_LOCAL_PATH`, `TEST_SPEC_DIR`; see
-[TypeScript test repository](#typescript-test-repository-playwright)) and use
-`--stage automation` or `--stage full`.
+To also **write, push and run** the generated spec, use `--stage automation` or
+`--stage full`. The spec goes to a `qa/<TICKET>` branch of the private
+[tripbuilder-e2e](https://github.com/regina-triparc/tripbuilder-e2e) repo. You need
+access to that repo and `TEST_REPO_ENV_FILE` set to your UAT test login; see
+[TypeScript test repository](#typescript-test-repository-playwright).
 
 ### The dashboard
 
@@ -108,7 +109,8 @@ Run from the project root with the virtualenv active.
 | `python -m taf serve [--reload]` | Starts the API and the dashboard. |
 | `python -m unittest` | Offline smoke tests. |
 
-To run a generated spec by hand, from inside your Playwright project:
+To run a generated spec by hand, from your own clone of tripbuilder-e2e (after
+`git fetch` and `git checkout qa/TB-601`):
 
 ```bash
 npx playwright test e2e/qa/TB-601.spec.ts --project=qa-agent --reporter=list
@@ -330,71 +332,71 @@ If Ollama is unreachable, the Report Synthesizer falls back to a deterministic r
 
 ### TypeScript test repository (Playwright)
 
-The agent does not create a Playwright project for you. It writes
-`<TICKET>.spec.ts` into one that already exists and then runs it. Point
-`TEST_REPO_LOCAL_PATH` at that project. **This is a path on your own machine —
-it is not a value anyone can send you**, and it is the one setting every new
-install has to fill in.
+Generated tests live in their own private repository,
+**[regina-triparc/tripbuilder-e2e](https://github.com/regina-triparc/tripbuilder-e2e)**,
+next to the hand-written TripBuilder suite. Nothing generated is ever written
+into this repo. Ask for access to tripbuilder-e2e if you will run the
+automation stage.
 
-There are two modes. Pick one.
+With the defaults in `.env.example` the agent keeps **its own clone** of that
+repo in a folder next to this one (`TEST_REPO_LOCAL_PATH=../tripbuilder-e2e-agent`).
+For every ticket it:
 
-**Mode A — in place (`TEST_REPO_NO_GIT=true`).** The recommended mode, and how
-this project is normally run. Point `TEST_REPO_LOCAL_PATH` at a Playwright
-working copy you already have checked out. The agent performs **no git
-operations at all**: no fetch, no checkout, no branch, no commit, no push. It
-writes the spec file and runs Playwright, so the branch you are on and any
-uncommitted work are never touched. `TEST_REPO_URL` and `GITHUB_TOKEN` stay
-empty — they are not read in this mode.
+1. clones the repo on the first run, and installs packages with `npm ci`;
+2. checks out `main` and pulls;
+3. creates or resets the branch `qa/<TICKET>`;
+4. writes `e2e/qa/<TICKET>.spec.ts`, and repairs it until Playwright can load it;
+5. commits and pushes `qa/<TICKET>` to GitHub;
+6. runs it with `--project=qa-agent`.
+
+A person then opens a pull request from `qa/<TICKET>` into `main`, reviews the
+spec and merges it. A failing generated test is either a guessed selector (fix
+the spec) or a real finding (report it on the ticket).
+
+Never work in the agent's clone yourself: it switches and resets branches there.
+For your own edits, clone tripbuilder-e2e a second time; its README covers that
+setup.
+
+**One-time setup on a new machine**
+
+- **Repo access.** git pushes with your normal GitHub sign-in (Git Credential
+  Manager on Windows and macOS), so `GITHUB_TOKEN` usually stays empty. If a push
+  is rejected, create a fine-grained PAT with **Contents: Read and write** on
+  tripbuilder-e2e only. The service sends it per command as an HTTP header
+  through git's environment config, so it never appears in the remote URL,
+  `.git/config`, the process list or logs.
+- **Test login.** Generated specs sign in to UAT through tripbuilder-e2e's
+  `setup` project, which needs `TBA_E2E_EMAIL` / `TBA_E2E_PASSWORD`. Set
+  `TEST_REPO_ENV_FILE` to a `.env` that holds them (for example your own working
+  copy's `../tripbuilder-e2e/.env`). They are passed to Playwright as environment
+  variables, so no secrets file is copied into the agent's clone.
+- `python -m taf doctor` checks both, and whether the clone exists yet.
 
 ```ini
-TEST_REPO_LOCAL_PATH=C:/code/TripArc.TripBuilder/apps/search-e2e
-TEST_REPO_NO_GIT=true
+TEST_REPO_URL=https://github.com/regina-triparc/tripbuilder-e2e.git
+TEST_REPO_LOCAL_PATH=../tripbuilder-e2e-agent
+TEST_REPO_NO_GIT=false
+TEST_REPO_BASE_BRANCH=main
 TEST_SPEC_DIR=e2e/qa
-GIT_PUSH_ENABLED=false
+GIT_PUSH_ENABLED=true
+TEST_REPO_ENV_FILE=../tripbuilder-e2e/.env
 PACKAGE_MANAGER=npm
 SKIP_DEPENDENCY_INSTALL=true
 PLAYWRIGHT_EXTRA_ARGS=--reporter=line --project=qa-agent
 ```
 
-**Mode B — managed clone (`TEST_REPO_NO_GIT=false`).** Give `TEST_REPO_URL` and
-`GITHUB_TOKEN`; the agent clones into `TEST_REPO_LOCAL_PATH` if it is missing,
-branches from `TEST_REPO_BASE_BRANCH`, commits, and pushes when
-`GIT_PUSH_ENABLED=true`. `TEST_REPO_LOCAL_PATH` must then be a **dedicated**
-directory the agent owns — never a clone you work in, because it checks out
-branches there.
+**Other Playwright projects.** The framework is not tied to TripBuilder. Point
+`TEST_REPO_URL` at any Playwright repo that has:
 
-Either way, the test project needs:
+- `@playwright/test` and a committed lockfile, with `PACKAGE_MANAGER` matching it;
+- a `TEST_SPEC_DIR` folder covered by `testDir`/`testMatch` in
+  `playwright.config.ts`, or Playwright reports `0 tests`;
+- a config that reads the base URL from the environment
+  (`use: { baseURL: process.env.BASE_URL }`).
 
-- `@playwright/test` in `devDependencies` and a committed lockfile. Set
-  `PACKAGE_MANAGER` to match that lockfile: a project with only
-  `package-lock.json` must be driven by `npm`, not `pnpm`, or the dependency tree
-  is re-resolved. Set `SKIP_DEPENDENCY_INSTALL=true` when `node_modules` is
-  already installed and human-managed.
-- The directory named by `TEST_SPEC_DIR` (relative to the project root) must
-  exist and be covered by `testDir`/`testMatch` in `playwright.config.ts`, or
-  Playwright reports `0 tests`.
-- A `playwright.config.ts` that reads the base URL from the environment:
-  ```ts
-  import { defineConfig } from '@playwright/test';
-  export default defineConfig({
-    testDir: './tests',
-    use: { baseURL: process.env.BASE_URL, trace: 'retain-on-failure' },
-    retries: process.env.CI ? 1 : 0,
-  });
-  ```
-- Browsers installed once on the machine, or `PLAYWRIGHT_INSTALL_BROWSERS=true`
-  to install them on every run.
-  ```bash
-  npx playwright install chromium
-  ```
-- If the project uses a dedicated Playwright project (for example `qa-agent`) or
-  a signed-in `storageState`, put the selecting flags in `PLAYWRIGHT_EXTRA_ARGS`
-  and make sure the auth setup has been run at least once.
-
-In Mode B, `GITHUB_TOKEN` should be a fine-grained PAT scoped only to the test
-repo with **Contents: Read and write**. The service injects it per command as an
-HTTP auth header through git's environment config, so it never appears in the
-remote URL, in `.git/config`, in the process list or in logs.
+To write into an existing checkout with **no** git operations at all, set
+`TEST_REPO_NO_GIT=true` and point `TEST_REPO_LOCAL_PATH` at it. The spec is
+then left uncommitted for you, and nothing is pushed.
 
 ### Page contract (optional but recommended)
 
@@ -422,10 +424,11 @@ the Trip Builder portal and doubles as a format example.
 | `OLLAMA_BASE_URL` | `http://localhost:11434/v1` | Ollama's OpenAI-compatible endpoint. |
 | `OLLAMA_MODEL` | `qwen2.5-coder:7b` | Local model used by Agent 4. |
 | `OLLAMA_TIMEOUT_SECONDS` | `300` | Timeout for each Ollama request. |
-| `TEST_REPO_LOCAL_PATH` | – | **Required.** Absolute path of the Playwright project on *this* machine. |
-| `TEST_REPO_NO_GIT` | `true` in `.env.example` | `true` = Mode A: write the spec and run it in place, no git operations. `false` = Mode B: clone/branch/commit. |
-| `GITHUB_TOKEN` | – | Mode B only. PAT used to push `qa/*` branches. |
-| `TEST_REPO_URL` | – | Mode B only. HTTPS clone URL of the Playwright repo. |
+| `TEST_REPO_LOCAL_PATH` | `../tripbuilder-e2e-agent` in `.env.example` | The agent's own clone of the test repo (relative = from this project's root). Cloned on first use. |
+| `TEST_REPO_NO_GIT` | `false` in `.env.example` | `false` = the agent's own clone: branch, commit, push. `true` = write and run the spec in place in an existing checkout, no git operations. |
+| `GITHUB_TOKEN` | – | Only if your git sign-in cannot push: PAT used to push `qa/*` branches. |
+| `TEST_REPO_ENV_FILE` | – | `.env` whose variables (the UAT test login) are passed to Playwright. |
+| `TEST_REPO_URL` | tripbuilder-e2e in `.env.example` | HTTPS clone URL of the Playwright repo the agent pushes `qa/*` branches to. |
 | `TEST_REPO_BASE_BRANCH` | `main` | Branch that QA branches are created from. |
 | `TEST_SPEC_DIR` | `tests/qa` | Where spec files are written, relative to the repo root. |
 | `GIT_PUSH_ENABLED` | `true` | Set to `false` to commit locally only (useful for dry runs). |

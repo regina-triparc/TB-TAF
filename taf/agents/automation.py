@@ -19,6 +19,7 @@ from taf.agents.base import agent_node
 from taf.agents.state import QAState
 from taf.config import SETTINGS, project_path
 from taf.core.text import extract_code_block, message_text, truncate_middle
+from taf.integrations.github.pull_requests import diff_for_prompt
 from taf.integrations.github.repository import REPO_LOCK, TEST_REPO, CommandError
 from taf.integrations.paperclip.control_room import CONTROL_ROOM
 from taf.llm.budget import BudgetExceededError
@@ -119,7 +120,7 @@ Target URL: {state.get('target_url', '')}
 
 ## Diff (for selectors, routes and copy text)
 ```diff
-{truncate_middle(state.get('github_diff', ''), SETTINGS.max_diff_chars // 2)}
+{diff_for_prompt(state, 1 / 2, route.provider)}
 ```{page_contract_block()}"""
     system = SYSTEM_PROMPT + skills_prompt("automation", route.provider)
     return [SystemMessage(content=system), ROUTER.context_message(route, prompt)]
