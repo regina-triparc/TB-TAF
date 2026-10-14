@@ -51,8 +51,9 @@ Step "Result"
 $written = (Test-Path $spec) -and ((Get-Item $spec).LastWriteTimeUtc -gt $before)
 if (-not $Push -and $haveRepo -and $written) {
   Write-Host "spec written: $spec"
+  Write-Host "test cases:   $(Join-Path $repoPath "xray\$Ticket")\  (Xray JSON, CSV, readable plan)"
   Write-Host "run it again:  cd `"$repoPath`"; npx playwright test e2e/qa/$Ticket.spec.ts --project=qa-agent --reporter=list"
-  Write-Host "discard it:    cd `"$repoPath`"; git checkout -- e2e/qa/$Ticket.spec.ts"
+  Write-Host "discard it:    cd `"$repoPath`"; git checkout -- e2e/qa/$Ticket.spec.ts; Remove-Item -Recurse xray\$Ticket   (or git checkout -- xray/$Ticket if it was committed)"
 }
 if (-not $Push -and $haveRepo -and -not $written) {
   Write-Host "no spec was written this run (offline provider, or the automation stage did not get that far - see above)"

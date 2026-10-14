@@ -52,8 +52,9 @@ if [ "$PUSH" = 0 ] && [ "$HAVE_REPO" = 1 ] && [ "$WRITTEN" = 0 ]; then
 fi
 if [ "$PUSH" = 0 ] && [ "$HAVE_REPO" = 1 ] && [ "$WRITTEN" = 1 ]; then
   echo "spec written: $SPEC"
+  echo "test cases:   $REPO/xray/$TICKET/  (Xray JSON, CSV, readable plan)"
   echo "run it again:  (cd \"$REPO\" && npx playwright test e2e/qa/$TICKET.spec.ts --project=qa-agent --reporter=list)"
-  echo "discard it:    (cd \"$REPO\" && git checkout -- e2e/qa/$TICKET.spec.ts)"
+  echo "discard it:    (cd \"$REPO\" && git checkout -- e2e/qa/$TICKET.spec.ts && rm -rf xray/$TICKET)   (or git checkout -- xray/$TICKET if it was committed)"
 fi
 if [ "$PUSH" = 1 ]; then echo "branch: https://github.com/regina-triparc/tripbuilder-e2e/tree/qa/$TICKET"; fi
 echo "dashboard:     $VPY -m taf serve   ->  http://127.0.0.1:8000/dashboard"
