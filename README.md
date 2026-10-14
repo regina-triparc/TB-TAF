@@ -247,7 +247,7 @@ skills/                        Markdown know-how appended to agent prompts (Play
 evals/                         eval cases, graders and runner
 data/seed_tickets.json         the ticket(s) used when Jira is not configured
 tests/                         offline smoke tests (python -m unittest)
-scripts/run-seeded.ps1, .sh     one command: seeded ticket -> spec in your local tripbuilder-e2e
+scripts/run-seeded.ps1, .sh    one command: seeded ticket -> spec in your local tripbuilder-e2e
 docs/                          setup guides (macOS, Windows, Ollama-only) and the demo runbook
 ```
 
