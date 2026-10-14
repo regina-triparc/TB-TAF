@@ -14,37 +14,187 @@ Jira ──"Ready for QA"──▶ n8n ──POST /qa/runs──▶ QA service �
                                                      └──REST──▶ Paperclip (issue per run, live comments, cost ledger, budget stop)
 ```
 
-## Quick start
+Everything can also be driven from a terminal and from a local dashboard, with
+no n8n, Jira or API key: the repo ships a seeded ticket (TB-601) and an
+`offline` model provider, so a fresh clone can run the pipeline end to end.
 
-The shortest path from a fresh clone to a working board. Full detail is in the
-sections below; Windows users should follow [SETUP-windows.md](SETUP-windows.md),
-and [DEMO.md](DEMO.md) is a step-by-step runbook of the demo this project is
-normally shown with.
+## Quick start (any machine, about 2 minutes)
+
+Needs Python 3.11+. Nothing else: no API key, no Ollama, no Jira, no Node.
 
 ```bash
-python3.12 -m venv .venv && source .venv/bin/activate   # Windows: .\.venv\Scripts\Activate.ps1
+python -m venv .venv
+```
+
+```bash
+source .venv/bin/activate
+```
+
+On Windows PowerShell, activate with `.\.venv\Scripts\Activate.ps1` instead.
+
+```bash
 pip install -r requirements.txt
+```
+
+```bash
 cp .env.example .env
 ```
 
-Then set **three** things in `.env` and leave everything else at its default:
-
-| What | Why |
-|---|---|
-| `LLM_PROVIDER=ollama` (plus `ollama serve` and `ollama pull qwen2.5-coder:7b`) | runs with no Anthropic key and no cloud cost. Use `claude` + `ANTHROPIC_API_KEY` instead if you have one. |
-| `TEST_REPO_LOCAL_PATH` | absolute path, **on your own machine**, to a Playwright project the agent writes specs into. There is no shared value for this — see [TypeScript test repository](#typescript-test-repository-playwright). |
-| `TEST_SPEC_DIR` | folder inside that project where `<TICKET>.spec.ts` is written (`e2e/qa` or `tests/qa`). It must exist and be picked up by `playwright.config.ts`. |
-
-Nothing else is required. `TEST_REPO_URL`, `GITHUB_TOKEN`, Jira, Paperclip and
-Xray are all optional and the service starts without them.
-
 ```bash
-uvicorn main:app --host 127.0.0.1 --port 8000
+python -m taf doctor
 ```
 
-Open <http://127.0.0.1:8000/dashboard>. With no Jira credentials the board reads
-`dashboard_seed.json`, which already contains a sample ticket, so you can click
-through a run immediately. `GET /health` shows which provider each agent resolved to.
+```bash
+python -m taf run TB-601 --provider offline --stage full
+```
+
+That pushes the seeded ticket through triage → test design → spec generation →
+report and prints what each agent produced. The `offline` provider uses no model:
+its output is mechanical placeholder text that proves the plumbing works, and its
+spec is never written into a test repository.
+
+```bash
+python -m unittest
+```
+
+runs the smoke tests (same offline setup, no network, a few seconds).
+
+### A real run
+
+Pick a model, then run the same command without `--provider offline`:
+
+| You have | Set in `.env` | Then |
+|---|---|---|
+| an Anthropic API key | `ANTHROPIC_API_KEY=...` (`LLM_PROVIDER=auto` then picks Claude) | `python -m taf run TB-601` |
+| Ollama | nothing (`auto` with no key means Ollama); run `ollama pull qwen2.5-coder:7b` and `ollama serve` | `python -m taf run TB-601` |
+
+To also **execute** the generated spec, point the service at a Playwright project
+on your machine (`TEST_REPO_LOCAL_PATH`, `TEST_SPEC_DIR`; see
+[TypeScript test repository](#typescript-test-repository-playwright)) and use
+`--stage automation` or `--stage full`.
+
+### The dashboard
+
+```bash
+python -m taf serve
+```
+
+Open <http://127.0.0.1:8000/dashboard>. It lists the queue (Jira, or the seed
+file), starts stages with a click, shows what each agent did, and has a **Model**
+selector that switches the LLM provider for new runs. Runs started from the
+terminal appear there too. `uvicorn main:app --host 127.0.0.1 --port 8000` still
+works and is equivalent.
+
+## Terminal commands
+
+Run from the project root with the virtualenv active.
+
+| Command | What it does |
+|---|---|
+| `python -m taf doctor` | Checks Python, `.env`, the provider (key set / Ollama reachable), the queue, the test repo, Node and the page contract. Exits 1 on a blocking problem. |
+| `python -m taf board` | Lists the queue: Jira when configured, otherwise `data/seed_tickets.json`. |
+| `python -m taf providers` | Shows the router: which provider and model each agent uses. |
+| `python -m taf providers --set ollama --server http://127.0.0.1:8000` | Switches the provider of a **running** service. Not persisted; `LLM_PROVIDER` in `.env` is the startup default. |
+| `python -m taf run TB-601` | Runs triage + architect (default `--stage architect`; no test repo needed). |
+| `python -m taf run TB-601 --stage full --provider claude` | Every stage, on Claude for this run only. Stages: `triage`, `architect`, `automation`, `full`. |
+| `python -m taf run TB-601 --show all` | Also prints execution logs. `--json` prints the whole final state instead. |
+| `python -m taf run ABC-1 --summary "..." --description "..."` | A ticket that is in neither Jira nor the seed file. |
+| `python -m taf skills` | Lists skills and the agents they apply to. |
+| `python -m taf eval --provider ollama` | Scores agent output against `evals/cases`. |
+| `python -m taf serve [--reload]` | Starts the API and the dashboard. |
+| `python -m unittest` | Offline smoke tests. |
+
+To run a generated spec by hand, from inside your Playwright project:
+
+```bash
+npx playwright test e2e/qa/TB-601.spec.ts --project=qa-agent --reporter=list
+```
+
+[docs/DEMO.md](docs/DEMO.md) has the PowerShell form of the whole demo, including
+the HTTP calls.
+
+## Project layout
+
+```
+main.py                        entry point kept for `uvicorn main:app`; re-exports taf.api.app
+taf/                           the service, as a package
+  config.py                    every setting, read once from .env; logging with secret redaction
+  cli.py, __main__.py          `python -m taf ...`
+  core/                        text and HTTP helpers with no project knowledge
+  llm/
+    router.py                  the LLM router: claude / ollama / auto / offline, per agent and per run
+    offline.py                 the no-model provider
+    pricing.py, budget.py      token pricing and the cloud spend guard
+  agents/                      one module per agent
+    triage.py, architect.py, automation.py, reporter.py, closeout.py
+    base.py                    the envelope every agent runs in (events, error handling)
+    schemas.py, state.py       structured outputs and the shared LangGraph state
+    graph.py                   the LangGraph wiring
+  integrations/
+    jira/board.py              Jira queue for the dashboard (falls back to the seed file)
+    jira/xray.py               Xray CSV and bulk-import JSON
+    github/repository.py       the Playwright test repo: git, install, playwright
+    paperclip/control_room.py  Paperclip mirror and budget checks
+  skills.py                    loads skills/*/SKILL.md into agent prompts
+  runs/
+    stages.py                  runs some stages for one ticket (dashboard and CLI)
+    registry.py                the n8n flow's background runner
+    store.py                   SQLite run history
+  api/
+    app.py                     /health, /qa/runs
+    dashboard.py, static/      /dashboard
+skills/                        Markdown know-how appended to agent prompts (Playwright, test design)
+  page-contracts/              real selectors of an app under test (PAGE_CONTRACT_PATH)
+evals/                         eval cases, graders and runner
+data/seed_tickets.json         the ticket(s) used when Jira is not configured
+tests/                         offline smoke tests (python -m unittest)
+docs/                          setup guides (macOS, Windows, Ollama-only) and the demo runbook
+```
+
+## LLM router
+
+`taf/llm/router.py` is the only place that talks to a model. Agents ask it for a
+route and call `ROUTER.structured(...)` or `ROUTER.text(...)`; the router picks the
+client, applies the budget guard and checks stop reasons.
+
+| Provider | Triage / Architect / Automation | Report |
+|---|---|---|
+| `claude` | Claude, model and effort per agent (`CLAUDE_<AGENT>_*`) | Ollama, deterministic fallback if it is down |
+| `ollama` | Ollama (`OLLAMA_MODEL`, or `OLLAMA_<AGENT>_MODEL`) | Ollama, fallback if down |
+| `auto` | `claude` when `ANTHROPIC_API_KEY` is set, else `ollama` | as resolved |
+| `offline` | built-in placeholder, no model | fallback |
+
+Which provider a run uses, most specific first:
+
+1. the run's own override: `--provider` on `taf run`, or `"provider"` in the body of
+   `POST /dashboard/api/start` or `POST /qa/runs`;
+2. the service default: `LLM_PROVIDER` at startup, switchable while running with the
+   dashboard's Model selector, `POST /dashboard/api/provider`, or
+   `python -m taf providers --set ... --server ...`;
+3. then `CLOUD_AGENTS` pins individual agents to Claude inside a local run - the
+   hybrid where a small local model triages and Claude writes the code.
+
+A run's provider is fixed when it starts; switching affects the next run.
+`GET /health` and `python -m taf providers` show the resolved routes.
+
+## Skills
+
+A skill is a Markdown file of team know-how appended to an agent's system prompt:
+how to choose Playwright locators, how to assert API calls, how to order test
+cases by risk. Adding expertise to an agent means adding a folder under `skills/`,
+not editing Python. Six ship with the repo, four of them for Playwright. Skills
+apply to Claude routes; on Ollama they are off unless `SKILLS_ON_LOCAL=true`,
+because a small context window fills fast. Format and settings:
+[skills/README.md](skills/README.md).
+
+## Evals
+
+`evals/` measures whether a change - model, prompt, skill, provider - made the
+agents better or worse. Each case is a ticket plus expectations; the runner sends
+it through the agents and grades triage, plan and spec deterministically, without
+touching a test repo. `python -m taf eval --provider offline` is the free plumbing
+check; run it with `claude` or `ollama` after changing a prompt or skill. Details:
+[evals/README.md](evals/README.md).
 
 ## Architecture
 
@@ -86,7 +236,7 @@ START → intake_triager → test_architect → automation_engineer → report_s
 
 If a cloud node aborts (budget cap hit or an unrecoverable LLM error), the graph jumps straight to the report and closeout. **n8n always gets a callback**, with `QA Failed` and the reason.
 
-**Shared state** (`QAState` in `main.py`): `ticket_id`, `summary`, `description`, `github_diff`, `target_url`, `test_plan`, `generated_typescript_code`, `execution_logs`, `execution_passed`, `xray_csv_content`, `final_report`, plus `xray_tests_json`. It also carries operational fields such as `run_id`, `git_branch`, `errors` and `aborted`.
+**Shared state** (`QAState` in `taf/agents/state.py`): `ticket_id`, `summary`, `description`, `github_diff`, `target_url`, `test_plan`, `generated_typescript_code`, `execution_logs`, `execution_passed`, `xray_csv_content`, `final_report`, plus `xray_tests_json`. It also carries operational fields such as `run_id`, `git_branch`, `errors` and `aborted`.
 
 ### Node 3 in detail
 
@@ -128,7 +278,7 @@ When a call is refused, the run skips the remaining cloud steps and still sends 
 
 > **Agent settings in Paperclip:** turn **off** both *Wake on demand* and the heartbeat for the QA agent. n8n starts runs, not Paperclip. Otherwise Paperclip tries to invoke the agent every time the service assigns it an issue. `/health` warns you if either setting is still on.
 
-> **Full walkthrough:** [SETUP.md](SETUP.md) (macOS) or [SETUP-windows.md](SETUP-windows.md) (Windows) takes you through setting up Ollama, the test repo, this service, Paperclip, n8n and Jira/Xray in order, with a check after each phase.
+> **Full walkthrough:** [docs/SETUP.md](docs/SETUP.md) (macOS) or [docs/SETUP-windows.md](docs/SETUP-windows.md) (Windows) takes you through setting up Ollama, the test repo, this service, Paperclip, n8n and Jira/Xray in order, with a check after each phase.
 
 ## Prerequisites
 
@@ -140,35 +290,21 @@ When a call is refused, the run skips the remaining cloud steps and still sends 
 | git | 2.31+ (needs `GIT_CONFIG_COUNT` support) | `brew install git` |
 | Ollama | latest | `brew install ollama` — required for `LLM_PROVIDER=ollama`, and for the report step in either mode. |
 
-On Windows, follow [SETUP-windows.md](SETUP-windows.md) for the equivalents.
+On Windows, follow [docs/SETUP-windows.md](docs/SETUP-windows.md) for the equivalents.
 
 ## Installation
 
 ```bash
-git clone https://github.com/<you>/<this-repo>.git
+git clone https://github.com/regina-triparc/TB-TAF.git
 ```
 
 ```bash
-cd <this-repo>
+cd TB-TAF
 ```
 
-```bash
-python3.12 -m venv .venv
-```
-
-```bash
-source .venv/bin/activate
-```
-
-```bash
-pip install -r requirements.txt
-```
-
-```bash
-cp .env.example .env
-```
-
-Then edit `.env` (see the reference below).
+Then follow [Quick start](#quick-start-any-machine-about-2-minutes): virtualenv,
+`pip install -r requirements.txt`, `cp .env.example .env`, `python -m taf doctor`.
+Every setting is described in `.env.example` and in the table below.
 
 ### Local model (Ollama)
 
@@ -261,16 +397,16 @@ remote URL, in `.git/config`, in the process list or in logs.
 `PAGE_CONTRACT_PATH` points at a Markdown file listing the real roles, labels and
 test IDs of the application under test. Without it the Automation Engineer
 invents selectors that do not exist and the generated spec fails on its first
-locator. [page_contract.md](page_contract.md) in this repo is the contract for
+locator. [skills/page-contracts/tripbuilder-tsp.md](skills/page-contracts/tripbuilder-tsp.md) is the contract for
 the Trip Builder portal and doubles as a format example.
 
 ## Environment variables
 
 | Variable | Default | Description |
 |---|---|---|
-| `LLM_PROVIDER` | `claude` | `claude` or `ollama`. With `ollama`, Agents 1–3 also run locally and no Anthropic key is needed. |
+| `LLM_PROVIDER` | `claude` (`auto` in `.env.example`) | `claude`, `ollama`, `auto` or `offline` - see [LLM router](#llm-router). |
 | `CLOUD_AGENTS` | – | Comma list of agents (`triage`,`architect`,`automation`) kept on Claude even when `LLM_PROVIDER=ollama`. |
-| `ANTHROPIC_API_KEY` | – | Required when `LLM_PROVIDER=claude`. Anthropic API key (from console.anthropic.com). |
+| `ANTHROPIC_API_KEY` | – | Required for Claude routes. With `auto`, an empty key means Ollama. |
 | `CLAUDE_TRIAGE_MODEL` / `_EFFORT` / `_MAX_TOKENS` | `claude-sonnet-5-5` / `medium` / `16000` | Model for Agent 1 (Intake Triager). |
 | `CLAUDE_ARCHITECT_MODEL` / `_EFFORT` / `_MAX_TOKENS` | `claude-sonnet-5-5` / `high` / `32000` | Model for Agent 2 (Test Architect). |
 | `CLAUDE_AUTOMATION_MODEL` / `_EFFORT` / `_MAX_TOKENS` | `claude-opus-5-5` / `high` / `64000` | Model for Agent 3 (TS Automation Engineer). `MAX_TOKENS` includes thinking. |
@@ -308,16 +444,18 @@ the Trip Builder portal and doubles as a format example.
 | `MAX_CLOUD_TOKENS_PER_RUN` | `250000` | Hard cap on Claude tokens per ticket (`0` = off). Prompt-cache reads don't count. |
 | `MAX_CLOUD_TOKENS_PER_DAY` | `2000000` | Hard cap on Claude tokens per day, in memory (`0` = off). |
 | `QA_SERVICE_API_KEY` | – | If set, callers must send it in the `X-API-Key` header. |
-| `HOST` / `PORT` | `127.0.0.1` / `8000` | Bind address, used when running `python main.py`. |
+| `HOST` / `PORT` | `127.0.0.1` / `8000` | Bind address for `python -m taf serve` / `python main.py`. |
 | `MAX_DIFF_CHARS`, `MAX_ENV_LOG_CHARS`, `MAX_EXEC_LOG_CHARS_FOR_LLM` | see `.env.example` | Prompt size limits. Longer inputs are truncated in the middle. |
 | `CALLBACK_TIMEOUT_SECONDS` | `30` | Timeout for the n8n callback request. |
 | `LOG_LEVEL` | `INFO` | Python log level. |
 | `OLLAMA_MAX_TOKENS` | `4096` | Output cap per local-model call. |
 | `OLLAMA_MAX_TEST_CASES` | `5` | Plan-size cap for the Test Architect on a local model. |
-| `PAGE_CONTRACT_PATH` | – | Markdown file of real roles/labels/test IDs for the app under test. Strongly recommended. |
+| `PAGE_CONTRACT_PATH` | – | Markdown file of real roles/labels/test IDs for the app under test. Relative paths are from the project root. Strongly recommended. |
 | `QA_DB_PATH` | `qa_runs.db` | SQLite file holding run history and per-phase artifacts. Created on first start. |
 | `DASHBOARD_TARGET_URL` | – | Target URL used by runs started from the dashboard buttons. |
-| `JIRA_BASE_URL` / `JIRA_EMAIL` / `JIRA_API_TOKEN` | – | Set all three to make the board poll Jira. With any of them missing it reads `dashboard_seed.json`. |
+| `JIRA_BASE_URL` / `JIRA_EMAIL` / `JIRA_API_TOKEN` | – | Set all three to make the board poll Jira. With any of them missing it reads `SEED_TICKETS_PATH`. |
+| `SEED_TICKETS_PATH` | `data/seed_tickets.json` | Offline queue; ships with TB-601. |
+| `SKILLS_ENABLED` / `SKILLS_ON_LOCAL` / `SKILLS_MAX_CHARS` / `SKILLS_DIR` | `true` / `false` / `12000` / `skills` | See [skills/README.md](skills/README.md). |
 | `JIRA_JQL` | see `.env.example` | Which tickets the board shows. |
 | `JIRA_POLL_SECONDS` / `JIRA_TIMEOUT_SECONDS` | `60` / `20` | Jira poll interval and request timeout. |
 
@@ -326,16 +464,18 @@ the Trip Builder portal and doubles as a format example.
 Start the service (development mode, with auto-reload):
 
 ```bash
-uvicorn main:app --host 127.0.0.1 --port 8000 --reload
+python -m taf serve --reload
 ```
 
-For a long-running process, drop `--reload`. Keep a **single worker**: runs share one git clone, and run state is held in memory.
-
-```bash
-uvicorn main:app --host 0.0.0.0 --port 8000 --workers 1
-```
+`uvicorn main:app --host 127.0.0.1 --port 8000 --reload` is equivalent. For a
+long-running process drop `--reload` and keep a **single worker**: runs share one
+test-repo working tree, and the n8n run registry is held in memory.
 
 Check the configuration:
+
+```bash
+python -m taf doctor
+```
 
 ```bash
 curl -s http://localhost:8000/health
@@ -352,12 +492,12 @@ cumulative, so `architect` runs triage first. "What the agent did" opens the
 extracted criteria, the test plan and the generated spec for a finished run.
 
 The queue comes from Jira when `JIRA_BASE_URL`, `JIRA_EMAIL` and `JIRA_API_TOKEN`
-are all set. Otherwise the board reads [dashboard_seed.json](dashboard_seed.json)
+are all set. Otherwise the board reads [data/seed_tickets.json](data/seed_tickets.json)
 and shows an amber "Jira is not configured" banner — that is the expected state
 for a fresh clone, and the sample ticket in that file is enough to exercise the
 whole pipeline.
 
-Run history and per-phase artifacts are persisted by [run_store.py](run_store.py)
+Run history and per-phase artifacts are persisted by [taf/runs/store.py](taf/runs/store.py)
 into the SQLite file at `QA_DB_PATH` (`qa_runs.db` by default, created on first
 start and git-ignored), so the board survives a restart.
 
@@ -366,14 +506,23 @@ The dashboard is deliberately **unauthenticated** and the service binds to
 you open in a browser would be worse than not protecting it; the `/qa/*` API keeps
 its key. Do not expose this port.
 
-The same thing from the command line:
+The same thing over HTTP (or use `python -m taf run`, which needs no server):
 
 ```bash
-curl -s -X POST http://127.0.0.1:8000/dashboard/api/start   -H 'Content-Type: application/json'   -d '{"ticket_id":"TB-601","stage":"triage"}'
+curl -s -X POST http://127.0.0.1:8000/dashboard/api/start -H 'Content-Type: application/json' -d '{"ticket_id":"TB-601","stage":"triage","provider":"offline"}'
+```
+
+```bash
 curl -s http://127.0.0.1:8000/dashboard/api/board
 ```
 
-On Windows use `Invoke-RestMethod`, not `curl` — see [DEMO.md](DEMO.md), which has
+```bash
+curl -s -X POST http://127.0.0.1:8000/dashboard/api/provider -H 'Content-Type: application/json' -d '{"provider":"ollama"}'
+```
+
+`provider` in the start body is optional (default: the service's current provider).
+
+On Windows use `Invoke-RestMethod`, not `curl` — see [docs/DEMO.md](docs/DEMO.md), which has
 the PowerShell form of every command here.
 
 ## API

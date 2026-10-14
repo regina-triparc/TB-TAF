@@ -112,6 +112,11 @@
   button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
   button.primary:hover:not(:disabled) { color: #fff; filter: brightness(1.08); }
   button.danger { border-color: var(--critical); color: var(--critical); }
+  select {
+    font: inherit; font-size: 12px; padding: 3px 8px; cursor: pointer;
+    background: var(--surface); color: var(--text);
+    border: 1px solid var(--border); border-radius: 6px;
+  }
 
   .detail { font-size: 12px; color: var(--text-mute); margin-top: 6px; }
   .err { color: var(--critical); }
@@ -159,10 +164,13 @@
     <span class="chip" id="engine">&hellip;</span>
     <span class="chip" id="jira">&hellip;</span>
     <span style="flex:1"></span>
+    <label class="chip" title="LLM router: which provider new runs use. Not persisted - LLM_PROVIDER in .env sets the startup default.">
+      Model <select id="provider" aria-label="LLM provider"></select>
+    </label>
     <button id="theme" title="Toggle theme">Theme</button>
     <button id="refresh">Refresh</button>
   </header>
-  <p class="sub">Tickets in <strong>Ready for QA</strong> and <strong>IN QA</strong>, with the pipeline stage each is in. Runs execute on the local model.</p>
+  <p class="sub">Tickets in <strong>Ready for QA</strong> and <strong>IN QA</strong>, with the pipeline stage each is in. New runs use the provider selected above.</p>
 
   <div id="banner"></div>
 
@@ -306,7 +314,16 @@ async function loadDetail(runId) {
   load();
 }
 
+function renderProvider(data) {
+  const sel = document.getElementById("provider");
+  if (document.activeElement === sel) return;  // don't fight the user mid-choice
+  const opts = (data.providers || []).map(p =>
+    `<option value="${esc(p)}"${p === data.provider_default ? " selected" : ""}>${esc(p)}</option>`).join("");
+  if (sel.innerHTML !== opts) sel.innerHTML = opts;
+}
+
 function render(data) {
+  renderProvider(data);
   document.getElementById("engine").innerHTML =
     `<span class="dot" style="background:var(--good)"></span>${esc(data.provider)} &middot; ${esc(data.model)}`;
 
@@ -414,6 +431,20 @@ document.addEventListener("click", async (ev) => {
 });
 
 document.getElementById("refresh").addEventListener("click", load);
+document.getElementById("provider").addEventListener("change", async (ev) => {
+  const provider = ev.target.value;
+  try {
+    const res = await fetch("/dashboard/api/provider", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ provider })
+    });
+    const body = await res.json();
+    if (!res.ok) throw new Error(body.detail || ("HTTP " + res.status));
+    toast(`New runs use ${provider} (${body.resolved})`);
+  } catch (e) { toast(e.message, true); }
+  ev.target.blur();
+  load();
+});
 document.getElementById("theme").addEventListener("click", () => {
   const dark = document.documentElement.getAttribute("data-theme") === "dark";
   document.documentElement.setAttribute("data-theme", dark ? "light" : "dark");

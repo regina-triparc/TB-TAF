@@ -55,3 +55,6 @@ playwright-report/
 
 # --- Local working copy of the Playwright test repo, if cloned inside this one --
 /search-e2e/
+
+# --- Eval output ---------------------------------------------------------------
+evals/results/

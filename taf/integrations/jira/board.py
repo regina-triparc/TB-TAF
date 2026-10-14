@@ -17,10 +17,11 @@ import logging
 import os
 import threading
 import time
-from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import requests
+
+from taf.config import SETTINGS, project_path
 
 LOG = logging.getLogger("qa.jira")
 
@@ -49,7 +50,9 @@ class JiraConfig:
         return ", ".join(gaps)
 
 
-_SEED_PATH = Path(__file__).parent / "dashboard_seed.json"
+# data/seed_tickets.json by default (SEED_TICKETS_PATH). Ships with TB-601 so a fresh
+# clone has one ticket to push through the pipeline with no Jira access at all.
+_SEED_PATH = project_path(SETTINGS.seed_tickets_path)
 
 
 def _seed_tickets() -> List[Dict[str, Any]]:

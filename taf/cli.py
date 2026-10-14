@@ -1,0 +1,305 @@
+"""
+Terminal interface: `python -m taf <command>`.
+
+    doctor                   check this machine's setup and say what is missing
+    providers [--set P]      show the LLM routing table; --set switches it (with --server, on a running service)
+    board                    list the queue (Jira, or the seed file when Jira is not configured)
+    skills                   list skills and the agents they apply to
+    run TICKET [options]     run pipeline stages for one ticket, in this process, and print what each agent did
+    eval [options]           score agent output against evals/cases (see evals/README.md)
+    serve [--reload]         start the API + dashboard (same as `uvicorn main:app`)
+
+Runs started here are recorded in the same run store as the dashboard, so they
+appear on the board too.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import shutil
+import sys
+from typing import Any, Dict, List, Optional
+
+_MARK = {"ok": "[ ok ]", "warn": "[warn]", "fail": "[FAIL]", "info": "[info]"}
+
+
+def _out(kind: str, text: str) -> None:
+    print(f"{_MARK[kind]} {text}")
+
+
+# ------------------------------------------------------------------ doctor --
+def cmd_doctor(_args: argparse.Namespace) -> int:
+    import requests
+
+    from taf.config import PROJECT_ROOT, SETTINGS, project_path
+    from taf.integrations.jira.board import get_board
+    from taf.llm.router import ROUTER
+    from taf.skills import load_skills
+
+    failures = 0
+
+    def check(ok: bool, good: str, bad: str, fatal: bool = True) -> None:
+        nonlocal failures
+        if ok:
+            _out("ok", good)
+        else:
+            _out("fail" if fatal else "warn", bad)
+            failures += int(fatal)
+
+    print(f"Project: {PROJECT_ROOT}\n")
+    check(sys.version_info >= (3, 11), f"Python {sys.version.split()[0]}",
+          f"Python {sys.version.split()[0]} - 3.11+ is required")
+    check((PROJECT_ROOT / ".env").is_file(), ".env present",
+          ".env missing - copy .env.example to .env (defaults work for an offline run)", fatal=False)
+
+    resolved = ROUTER.resolve()
+    _out("info", f"LLM provider: {ROUTER.default_provider} -> {resolved}")
+    needs_ollama = resolved in ("ollama", "claude")
+    if resolved == "claude":
+        check(bool(SETTINGS.anthropic_api_key), "ANTHROPIC_API_KEY set",
+              "ANTHROPIC_API_KEY empty - set it, or use LLM_PROVIDER=ollama / offline")
+    if needs_ollama:
+        try:
+            requests.get(SETTINGS.ollama_base_url.rstrip("/") + "/models", timeout=3).raise_for_status()
+            _out("ok", f"Ollama reachable at {SETTINGS.ollama_base_url}")
+        except requests.RequestException:
+            fatal = resolved == "ollama"
+            check(False, "", f"Ollama not reachable at {SETTINGS.ollama_base_url} - "
+                  + ("start `ollama serve`" if fatal else "the report step will use its fallback"), fatal=fatal)
+    if resolved == "offline":
+        _out("info", "offline provider: placeholder output only, no model needed")
+
+    jira = get_board().tickets()
+    keys = ", ".join(t.get("key", "?") for t in jira["tickets"][:5])
+    check(bool(jira["tickets"]), f"Queue: {len(jira['tickets'])} ticket(s) ({'Jira' if jira['configured'] else 'seed file'}): {keys}",
+          f"Queue empty - {jira['reason'] or 'no tickets'}", fatal=False)
+
+    if SETTINGS.test_repo_local_path:
+        repo = project_path(SETTINGS.test_repo_local_path)
+        check(repo.is_dir(), f"TEST_REPO_LOCAL_PATH exists: {repo}",
+              f"TEST_REPO_LOCAL_PATH does not exist: {repo}", fatal=False)
+        if repo.is_dir():
+            check((repo / SETTINGS.test_spec_dir).is_dir(), f"TEST_SPEC_DIR exists: {SETTINGS.test_spec_dir}",
+                  f"TEST_SPEC_DIR missing in the test repo: {SETTINGS.test_spec_dir}", fatal=False)
+            check((repo / "node_modules").is_dir(), "test repo has node_modules",
+                  "test repo has no node_modules - run `npm ci` there", fatal=False)
+    else:
+        _out("warn", "TEST_REPO_LOCAL_PATH not set - triage/architect stages work, automation will not")
+    for tool in ("node", "npx", "git"):
+        check(bool(shutil.which(tool)), f"{tool} on PATH", f"{tool} not on PATH (needed for the automation stage)",
+              fatal=False)
+
+    if SETTINGS.page_contract_path:
+        check(project_path(SETTINGS.page_contract_path).is_file(), f"page contract: {SETTINGS.page_contract_path}",
+              f"PAGE_CONTRACT_PATH unreadable: {SETTINGS.page_contract_path}", fatal=False)
+    skills = load_skills()
+    _out("info", f"{len(skills)} skill(s) in {SETTINGS.skills_dir}/ "
+                 f"({'enabled' if SETTINGS.skills_enabled else 'disabled'}; on local models: "
+                 f"{'yes' if SETTINGS.skills_on_local else 'no'})")
+
+    print()
+    if failures:
+        print(f"{failures} blocking problem(s). Fix those, or try: python -m taf run TB-601 --provider offline")
+        return 1
+    print("Ready. Try: python -m taf run TB-601 --stage architect")
+    return 0
+
+
+# --------------------------------------------------------------- providers --
+def cmd_providers(args: argparse.Namespace) -> int:
+    if args.server:
+        import requests
+        base = args.server.rstrip("/")
+        try:
+            if args.set:
+                resp = requests.post(f"{base}/dashboard/api/provider", json={"provider": args.set}, timeout=10)
+            else:
+                resp = requests.get(f"{base}/dashboard/api/provider", timeout=10)
+        except requests.RequestException as exc:
+            _out("fail", f"Cannot reach {base}: {exc}")
+            return 1
+        if not resp.ok:
+            _out("fail", f"{resp.status_code}: {resp.text[:300]}")
+            return 1
+        _print_routing(resp.json())
+        return 0
+
+    from taf.llm.router import ROUTER
+    if args.set:
+        ROUTER.set_default(args.set)
+        _out("info", "Switched for this process only. To switch a running service add "
+                     "--server http://127.0.0.1:8000; to make it permanent set LLM_PROVIDER in .env.")
+    _print_routing(ROUTER.describe())
+    return 0
+
+
+def _print_routing(info: Dict[str, Any]) -> None:
+    print(f"default provider: {info['default']}  (resolves to {info['resolved']})")
+    print(f"available:        {', '.join(info['available'])}")
+    print(f"claude key set:   {'yes' if info['claude_configured'] else 'no'}\n")
+    print(f"  {'agent':<11} {'provider':<9} {'model':<28} effort")
+    for key, r in info["routes"].items():
+        print(f"  {key:<11} {r['provider']:<9} {r['model']:<28} {r['effort']}")
+    report = info["report"]
+    print(f"  {'report':<11} {report['provider']:<9} {report['model']:<28} n/a")
+
+
+# ------------------------------------------------------------------- board --
+def cmd_board(_args: argparse.Namespace) -> int:
+    from taf.integrations.jira.board import get_board
+    jira = get_board().tickets()
+    print(f"source: {'Jira' if jira['configured'] else 'seed file'}"
+          + (f"  ({jira['reason']})" if jira["reason"] else ""))
+    for t in jira["tickets"]:
+        print(f"  {t.get('key', ''):<10} {t.get('status', ''):<14} {t.get('summary', '')}")
+    return 0
+
+
+# ------------------------------------------------------------------ skills --
+def cmd_skills(_args: argparse.Namespace) -> int:
+    from taf.config import SETTINGS
+    from taf.skills import load_skills
+    skills = load_skills()
+    print(f"{len(skills)} skill(s) in {SETTINGS.skills_dir}/ - enabled: {SETTINGS.skills_enabled}, "
+          f"on local models: {SETTINGS.skills_on_local}")
+    for s in skills:
+        print(f"  {s.name:<30} agents={','.join(s.agents) or '-':<22} {s.description}")
+    return 0
+
+
+# --------------------------------------------------------------------- run --
+def cmd_run(args: argparse.Namespace) -> int:
+    from taf.llm.router import ROUTER
+    from taf.runs import stages
+
+    try:
+        ROUTER.resolve(args.provider or None)
+        state = stages.prepare(args.ticket, args.stage, summary=args.summary or "",
+                               description=args.description or "", target_url=args.target_url or "",
+                               provider=args.provider or "")
+    except (stages.StageError, ValueError) as exc:
+        _out("fail", str(exc))
+        return 2
+
+    routing = ROUTER.describe(args.provider or None)
+    print(f"run {state['run_id']}  ticket {args.ticket}  stage {args.stage}  provider {routing['resolved']}")
+    print(f"target: {state['target_url'] or '(none - set DASHBOARD_TARGET_URL or --target-url)'}\n")
+
+    def on_phase(name: str, status: str, detail: str) -> None:
+        if status == "running":
+            print(f"  -> {name} ...", flush=True)
+        else:
+            _out("ok" if status == "ok" else "fail", f"{name}: {detail}")
+
+    final = stages.execute(state, args.stage, on_phase=on_phase)
+
+    if args.json:
+        print(json.dumps({k: v for k, v in final.items() if not k.startswith("_")}, indent=2, default=str))
+    else:
+        _print_outputs(final, args.show)
+    print(f"\nrun state: {final.get('_run_state')}  (also on the dashboard: python -m taf serve)")
+    return 0 if final.get("_run_state") == "completed" else 1
+
+
+def _print_outputs(state: Dict[str, Any], show: List[str]) -> None:
+    triage = state.get("triage_analysis") or {}
+    if triage and ("triage" in show or "all" in show):
+        print("\n== Triage ==")
+        print(f"risk: {triage.get('risk_level')}  -  {triage.get('feature_summary')}")
+        for c in triage.get("acceptance_criteria") or []:
+            print(f"  - {c}")
+    cases = state.get("test_cases") or []
+    if cases and ("plan" in show or "all" in show):
+        print(f"\n== Test plan ({len(cases)} cases) ==")
+        for c in cases:
+            print(f"  {c.get('test_id')} [{c.get('priority')}] {'auto' if c.get('automatable') else 'manual'}  {c.get('summary')}")
+    if state.get("generated_typescript_code") and ("spec" in show or "all" in show):
+        print("\n== Generated spec ==")
+        print(state["generated_typescript_code"])
+    if state.get("execution_logs") and ("logs" in show or "all" in show):
+        print("\n== Execution log (tail) ==")
+        print(state["execution_logs"][-3000:])
+    if state.get("final_report") and ("report" in show or "all" in show):
+        print("\n== Report ==")
+        print(state["final_report"])
+
+
+# -------------------------------------------------------------------- eval --
+def cmd_eval(args: argparse.Namespace) -> int:
+    from taf.config import PROJECT_ROOT
+    if str(PROJECT_ROOT) not in sys.path:  # evals/ sits next to taf/, not inside it
+        sys.path.insert(0, str(PROJECT_ROOT))
+    from evals.runner import main as eval_main
+    argv: List[str] = []
+    if args.provider:
+        argv += ["--provider", args.provider]
+    for case in args.case or []:
+        argv += ["--case", case]
+    if args.stage:
+        argv += ["--stage", args.stage]
+    return eval_main(argv)
+
+
+# ------------------------------------------------------------------- serve --
+def cmd_serve(args: argparse.Namespace) -> int:
+    import uvicorn
+
+    from taf.config import PROJECT_ROOT, SETTINGS
+    uvicorn.run("main:app", host=args.host or SETTINGS.host, port=args.port or SETTINGS.port,
+                reload=args.reload, app_dir=str(PROJECT_ROOT))
+    return 0
+
+
+# -------------------------------------------------------------------- main --
+def build_parser() -> argparse.ArgumentParser:
+    from taf.config import LLM_PROVIDERS
+
+    parser = argparse.ArgumentParser(prog="python -m taf", description="Autonomous QA framework - terminal interface.")
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    sub.add_parser("doctor", help="check this machine's setup").set_defaults(fn=cmd_doctor)
+
+    p = sub.add_parser("providers", help="show or switch the LLM router")
+    p.add_argument("--set", choices=LLM_PROVIDERS, help="switch the default provider")
+    p.add_argument("--server", help="apply to a running service, e.g. http://127.0.0.1:8000")
+    p.set_defaults(fn=cmd_providers)
+
+    sub.add_parser("board", help="list the ticket queue").set_defaults(fn=cmd_board)
+    sub.add_parser("skills", help="list skills").set_defaults(fn=cmd_skills)
+
+    p = sub.add_parser("run", help="run pipeline stages for one ticket")
+    p.add_argument("ticket", help="ticket key, e.g. TB-601 (from Jira or data/seed_tickets.json)")
+    p.add_argument("--stage", default="architect", choices=["triage", "architect", "automation", "full"],
+                   help="how far to go (default: architect - no test repo needed)")
+    p.add_argument("--provider", choices=LLM_PROVIDERS, help="router override for this run only")
+    p.add_argument("--target-url", help="app under test (default: DASHBOARD_TARGET_URL)")
+    p.add_argument("--summary", help="ticket summary, when the ticket is not in Jira or the seed file")
+    p.add_argument("--description", help="ticket description / acceptance criteria")
+    p.add_argument("--show", nargs="+", default=["triage", "plan", "spec", "report"],
+                   choices=["triage", "plan", "spec", "logs", "report", "all"], help="what to print afterwards")
+    p.add_argument("--json", action="store_true", help="print the final pipeline state as JSON")
+    p.set_defaults(fn=cmd_run)
+
+    p = sub.add_parser("eval", help="score agent output against evals/cases")
+    p.add_argument("--provider", choices=LLM_PROVIDERS)
+    p.add_argument("--case", action="append", help="case id (repeatable); default: all")
+    p.add_argument("--stage", choices=["triage", "architect", "automation"], help="stop after this agent")
+    p.set_defaults(fn=cmd_eval)
+
+    p = sub.add_parser("serve", help="start the API and dashboard")
+    p.add_argument("--host")
+    p.add_argument("--port", type=int)
+    p.add_argument("--reload", action="store_true")
+    p.set_defaults(fn=cmd_serve)
+    return parser
+
+
+def main(argv: Optional[List[str]] = None) -> int:
+    # Reports contain emoji; a Windows console in a legacy code page must not crash on them.
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="replace")  # type: ignore[attr-defined]
+        except (AttributeError, ValueError):
+            pass
+    args = build_parser().parse_args(argv)
+    return args.fn(args)
