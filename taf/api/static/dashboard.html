@@ -285,7 +285,10 @@ function renderAutomation(a) {
       <strong>Branch:</strong> ${esc(a.git_branch || "-")} &nbsp;
       <strong>Pushed:</strong> ${a.git_pushed ? "yes" : "no"} &nbsp;
       <strong>Tests:</strong> ${a.execution_passed ? "passed" : "did not pass"}<br>
-      <strong>Spec:</strong> ${esc(a.spec_file_path || "-")}</div>`;
+      <strong>Spec:</strong> ${esc(a.spec_file_path || "-")}<br>
+      <strong>Xray test cases:</strong> ${(a.xray_files || []).length
+        ? (a.xray_files || []).map(f => `<code>${esc(f)}</code>`).join(" ")
+        : "-"}</div>`;
   return section("Automation - what it built", head) +
     (a.code ? section("Generated spec", `<pre>${esc(a.code)}</pre>`) : "") +
     (a.log_tail ? section("Playwright output (tail)", `<pre>${esc(a.log_tail)}</pre>`) : "");
@@ -328,12 +331,19 @@ function render(data) {
     `<span class="dot" style="background:var(--good)"></span>${esc(data.provider)} &middot; ${esc(data.model)}`;
 
   const jiraChip = document.getElementById("jira");
-  jiraChip.innerHTML = data.jira_configured
+  // "Demo mode" is a choice (TICKET_SOURCE=seed), not a problem: say so instead of asking for Jira.
+  const demo = data.ticket_source === "seed" && /Demo mode/.test(data.jira_reason || "");
+  jiraChip.innerHTML = demo
+    ? `<span class="dot" style="background:var(--good)"></span>Demo queue (seed)`
+    : data.jira_configured
     ? `<span class="dot" style="background:${data.jira_reason ? "var(--critical)" : "var(--good)"}"></span>Jira ${data.jira_reason ? "error" : "connected"}`
     : `<span class="dot" style="background:var(--warning)"></span>Jira not configured`;
 
-  document.getElementById("banner").innerHTML =
-    (!data.jira_configured || data.jira_reason)
+  document.getElementById("banner").innerHTML = demo
+    ? `<div class="banner"><strong>Demo mode.</strong> Tickets come from <code>data/seed_tickets.json</code>,
+       not Jira. Start the service with <code>-Source jira</code> (or <code>TICKET_SOURCE=jira</code>)
+       for your real queue.</div>`
+    : (!data.jira_configured || data.jira_reason)
       ? `<div class="banner"><strong>Queue unavailable.</strong> ${esc(data.jira_reason || "")}
          Add <code>JIRA_BASE_URL</code>, <code>JIRA_EMAIL</code> and <code>JIRA_API_TOKEN</code> to
          <code>.env</code> and restart the service. Runs already recorded are still listed below.</div>`

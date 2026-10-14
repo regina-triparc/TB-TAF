@@ -1,5 +1,7 @@
 # Setup Guide
 
+> **Optional hosted stack.** This guide sets up the full stack with n8n and Paperclip, which local runs do not use. To run the demo or use the service locally (dashboard, scripts, CLI), follow [DEMO.md](DEMO.md) and the main [README](../README.md) instead. Paths and commands in this guide may predate the `taf` package; where they differ, the README is current.
+
 Step-by-step setup of the full stack on a MacBook: the QA service, Ollama, the Playwright test repo, Paperclip and n8n, wired to Jira, GitHub and Xray.
 
 > **On Windows?** Follow [SETUP-windows.md](SETUP-windows.md) instead.

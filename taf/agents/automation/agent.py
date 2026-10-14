@@ -16,11 +16,13 @@ from typing import Any, Dict, List, Optional, Tuple
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 
 from taf.agents.base import agent_node
+from taf.agents.prompts import load_prompt
 from taf.agents.state import QAState
 from taf.config import SETTINGS, project_path
 from taf.core.text import extract_code_block, message_text, truncate_middle
 from taf.integrations.github.pull_requests import diff_for_prompt
 from taf.integrations.github.repository import REPO_LOCK, TEST_REPO, CommandError
+from taf.integrations.jira import xray
 from taf.integrations.paperclip.control_room import CONTROL_ROOM
 from taf.llm.budget import BudgetExceededError
 from taf.llm.router import ROUTER, AgentRoute, LLMOutputError
@@ -28,36 +30,9 @@ from taf.skills import skills_prompt
 
 log = logging.getLogger("qa.automation")
 
-SYSTEM_PROMPT = """You are a senior TypeScript SDET writing Playwright Test specs.
-Produce ONE complete, compilable `.spec.ts` file for the automatable test cases you are given.
+SYSTEM_PROMPT = load_prompt(__file__, "prompt.md")
 
-Hard requirements:
-- TypeScript only. First line: `import { test, expect } from '@playwright/test';`
-- Wrap everything in `test.describe('<TICKET_ID>: <summary>', () => { ... })`.
-- One `test('[TC-XXX] <summary>', async ({ page }) => { ... })` per automatable test case; keep the TC id
-  prefix in the title so results trace back to Xray.
-- Resolve the base URL as: `const BASE_URL = process.env.BASE_URL ?? '<target url>';` and navigate with
-  `page.goto(BASE_URL + '/path')` or `page.goto(BASE_URL)`.
-- Use resilient, user-facing locators (getByRole, getByLabel, getByText, getByTestId) and web-first
-  assertions (`await expect(locator).toBeVisible()`); never use `page.waitForTimeout` or fixed sleeps.
-- Tests must be independent and idempotent; use `test.step()` to mirror the plan's steps.
-- Non-functional checks must use only built-in Playwright APIs (e.g. `page.evaluate` on
-  `performance.getEntriesByType('navigation')` for load budgets, keyboard navigation / ARIA checks for a11y).
-- Never hard-code secrets. If credentials are required read them from `process.env` and call
-  `test.skip(!process.env.X, 'reason')` when missing.
-- Where the exact selector is unknown, choose the most likely accessible role/name from the diff and add a
-  short `// ASSUMPTION:` comment.
-Return ONLY the file content inside a single ```typescript fenced block."""
-
-REPAIR_PROMPT = """Playwright could not load the spec you wrote. This is the output of
-`playwright test {spec} --list`, which only loads and collects the tests (no browser was started):
-
-```
-{error}
-```
-
-Fix the problem and return the COMPLETE corrected file in a single ```typescript block.
-Change only what is needed to make the spec load; keep the test ids, titles and intent."""
+REPAIR_PROMPT = load_prompt(__file__, "repair-prompt.md")
 
 
 def validate_spec(code: str) -> str:
@@ -128,37 +103,50 @@ Target URL: {state.get('target_url', '')}
 
 @agent_node("TS Automation Engineer", engine="llm+local-cli", abort_on_error=True, route_key="automation")
 def automation_engineer(state: QAState) -> Dict[str, Any]:
+    """
+    Writes into the test repo, on the qa/<TICKET> branch (or in place):
+      * XRAY_DIR/<TICKET>/ - the plan's Xray test cases (JSON, CSV, readable plan)
+      * TEST_SPEC_DIR/<TICKET>.spec.ts - the Playwright spec, repaired until it loads
+    commits both together for review, then runs the spec.
+    """
     ticket_id, run_id = state["ticket_id"], state["run_id"]
     target_url = state.get("target_url", "")
     route = ROUTER.route("automation", state.get("llm_provider"))
     agent = route.label
-    if not automatable_cases(state):
-        return {
-            "execution_passed": False,
-            "execution_logs": "[error] The test plan contains no automatable test cases - nothing was executed.",
-            "errors": ["TS Automation Engineer: no automatable test cases in plan."],
-        }
+    cases = automatable_cases(state)
+    xray_files = xray.ticket_files(state)
+    no_cases_error = f"{agent}: no automatable test cases in plan."
 
     # ---- 3a. The model writes the Playwright spec ---------------------------
-    messages = build_messages(state, route)
-    answer = ROUTER.text(state, route, messages)
+    answer: Optional[AIMessage] = None
+    messages: List[BaseMessage] = []
+    if cases:
+        messages = build_messages(state, route)
+        answer = ROUTER.text(state, route, messages)
 
     if route.provider == "offline":
-        # The placeholder must never overwrite a real spec in someone's test repo.
-        code, problem = parse_spec(answer)
+        # Placeholders must never overwrite a real spec or real test cases in a test repo.
+        code, problem = parse_spec(answer) if answer is not None else (None, None)
         return {
             "generated_typescript_code": code or "",
             "execution_passed": False,
-            "execution_logs": ("[info] Offline provider: placeholder spec generated and NOT written to the "
-                               "test repository; Playwright was not run. Switch the provider to "
-                               "claude or ollama for a real run." + (f"\n[error] {problem}" if problem else "")),
+            "execution_logs": ("[info] Offline provider: placeholder spec and test cases generated and NOT "
+                               "written to the test repository; Playwright was not run. Switch the provider "
+                               "to claude or ollama for a real run." + (f"\n[error] {problem}" if problem else "")),
+        }
+    if not cases and not xray_files:
+        return {
+            "execution_passed": False,
+            "execution_logs": "[error] The test plan is empty - nothing was written or executed.",
+            "errors": [no_cases_error],
         }
 
-    # ---- 3b. Validate -> repair -> commit -> run (serialised on the shared clone) --
+    # ---- 3b. Write test cases + spec -> repair -> commit -> run (one shared clone) --
     logs: List[str] = []
     errors: List[str] = []
     code: Optional[str] = None
     spec_path: Optional[Path] = None
+    xray_paths: List[Path] = []
     branch, pushed, loaded, passed = "", False, False, False
     max_repairs = max(0, min(SETTINGS.spec_repair_attempts, 3))  # 1 + 3 cache breakpoints max
     repairs = 0
@@ -168,9 +156,18 @@ def automation_engineer(state: QAState) -> Dict[str, Any]:
         try:
             TEST_REPO.ensure_ready(logs)
             branch = TEST_REPO.prepare_branch(ticket_id, logs)
-            deps_ok = TEST_REPO.install_dependencies(target_url, logs)
+            if xray_files:
+                xray_paths = TEST_REPO.write_files(xray.ticket_dir(ticket_id), xray_files, logs)
 
-            while True:
+            deps_ok = False
+            if cases:
+                deps_ok = TEST_REPO.install_dependencies(target_url, logs)
+            else:
+                logs.append("[error] The test plan contains no automatable test cases - "
+                            "test cases written, no spec generated or executed.")
+                errors.append(no_cases_error)
+
+            while answer is not None:
                 candidate, problem = parse_spec(answer)
                 if candidate is not None:
                     code = candidate
@@ -201,8 +198,9 @@ def automation_engineer(state: QAState) -> Dict[str, Any]:
                     break
                 repairs += 1
 
-            if spec_path is not None:
-                pushed = TEST_REPO.commit_and_push(ticket_id, spec_path, branch, logs)
+            to_commit = xray_paths + ([spec_path] if spec_path is not None else [])
+            if to_commit:
+                pushed = TEST_REPO.commit_and_push(ticket_id, to_commit, branch, logs)
             if loaded:
                 CONTROL_ROOM.emit(run_id, ticket_id, "agent.log", agent=agent,
                                   message=f"Spec loads (repairs: {repairs}); branch {branch} "
@@ -219,9 +217,11 @@ def automation_engineer(state: QAState) -> Dict[str, Any]:
             errors.append(f"{agent}: {exc}")
             passed = False
 
+    repo_root = TEST_REPO.path
     return {
         "generated_typescript_code": code or "",
         "spec_file_path": str(spec_path) if spec_path else "",
+        "xray_files": [p.resolve().relative_to(repo_root.resolve()).as_posix() for p in xray_paths] if repo_root else [],
         "git_branch": branch,
         "git_pushed": pushed,
         "execution_logs": "\n\n".join(logs),

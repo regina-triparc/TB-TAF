@@ -241,6 +241,7 @@ def phase_artifact(name: str, state: Dict[str, Any]) -> Optional[Dict[str, Any]]
             "git_branch": state.get("git_branch"),
             "git_pushed": bool(state.get("git_pushed")),
             "spec_file_path": state.get("spec_file_path"),
+            "xray_files": state.get("xray_files") or [],
             "execution_passed": bool(state.get("execution_passed")),
             "code": (state.get("generated_typescript_code") or "")[:20000],
             # The tail is where Playwright prints its pass/fail summary.

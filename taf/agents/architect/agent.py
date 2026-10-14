@@ -7,6 +7,7 @@ from typing import Any, Dict
 from langchain_core.messages import SystemMessage
 
 from taf.agents.base import agent_node
+from taf.agents.prompts import load_prompt
 from taf.agents.schemas import TestPlan
 from taf.agents.state import QAState
 from taf.config import SETTINGS
@@ -15,29 +16,12 @@ from taf.integrations.jira.xray import build_xray_csv, build_xray_tests_json
 from taf.llm.router import ROUTER
 from taf.skills import skills_prompt
 
-SYSTEM_PROMPT = """You are the Test Architect in an autonomous QA team.
-From the triage analysis you design a complete, risk-based test plan for the change.
-
-Rules:
-- Cover every acceptance criterion with at least one functional test (happy path, negative, edge cases).
-- Add non-functional tests where the change warrants it: performance (e.g. page load / API latency budgets),
-  accessibility (WCAG 2.1 AA basics), security (authz, input validation), resilience, cross-browser.
-- Every test case has concrete, observable expected results - never "works correctly".
-- Mark `automatable=true` only for cases Playwright can execute against the target URL without
-  manual setup the automation cannot perform.
-- Use sequential IDs TC-001, TC-002, ...
-- Prefer 6-20 high-value cases over exhaustive permutations. Order by priority."""
+SYSTEM_PROMPT = load_prompt(__file__, "prompt.md")
 
 # A small local model generates every token of the plan under a JSON-schema grammar,
 # so plan length is the dominant cost: a 20-case plan does not finish inside any sane
 # timeout on CPU. Cap it, and keep the steps terse. Cloud models do not need this.
-LOCAL_LIMIT = """
-
-LOCAL MODEL CONSTRAINTS - these override the preferences above:
-- Produce AT MOST {max_cases} test cases. Choose the highest-risk ones; do not enumerate.
-- At most 4 steps per test case. One short sentence per action and per expected result.
-- Keep `strategy` to two sentences. Keep `in_scope` and `out_of_scope` to 3 items each.
-- Omit a test rather than padding the plan."""
+LOCAL_LIMIT = load_prompt(__file__, "local-model-limits.md")
 
 
 def build_prompt(state: QAState, provider: str = "claude") -> str:

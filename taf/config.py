@@ -147,6 +147,13 @@ class Settings:
     xray_test_folder: str = field(default_factory=lambda: env_str("XRAY_TEST_FOLDER", "AI QA/{ticket_id}"))
     xray_requirement_link_type: str = field(default_factory=lambda: env_str("XRAY_REQUIREMENT_LINK_TYPE", "Test"))
     xray_include_priority: bool = field(default_factory=lambda: env_bool("XRAY_INCLUDE_PRIORITY", False))
+    # Folder in the TEST repo where each ticket's Xray test cases are written
+    # (xray/<TICKET>/...), committed next to the spec for review before any export.
+    xray_dir: str = field(default_factory=lambda: env_str("XRAY_DIR", "xray"))
+    # Only for `taf xray export --apply` (Xray Cloud > Settings > API Keys).
+    xray_client_id: str = field(default_factory=lambda: env_str("XRAY_CLIENT_ID"))
+    xray_client_secret: str = field(default_factory=lambda: env_str("XRAY_CLIENT_SECRET"))
+    xray_base_url: str = field(default_factory=lambda: env_str("XRAY_BASE_URL", "https://xray.cloud.getxray.app").rstrip("/"))
 
     # --- Ticket source ------------------------------------------------------
     # jira = the real flow: tickets and their linked PRs come from the Jira API.
@@ -190,7 +197,7 @@ class Settings:
     def secrets(self) -> List[str]:
         """Values that must never appear in logs, reports or subprocess output."""
         candidates = (self.github_token, self.anthropic_api_key, self.paperclip_api_key,
-                      os.getenv("JIRA_API_TOKEN", "").strip())
+                      self.xray_client_secret, os.getenv("JIRA_API_TOKEN", "").strip())
         return [s for s in candidates if s and len(s) >= 8]
 
 

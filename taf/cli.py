@@ -7,6 +7,7 @@ Terminal interface: `python -m taf <command>`.
     skills                   list skills and the agents they apply to
     run TICKET [options]     run pipeline stages for one ticket, in this process, and print what each agent did
     eval [options]           score agent output against evals/cases (see evals/README.md)
+    xray export TICKET       import reviewed Xray test cases from the test repo (dry run unless --apply)
     serve [--reload]         start the API + dashboard (same as `uvicorn main:app`)
 
 Runs started here are recorded in the same run store as the dashboard, so they
@@ -265,6 +266,72 @@ def cmd_eval(args: argparse.Namespace) -> int:
 
 
 # ------------------------------------------------------------------- serve --
+def cmd_xray_export(args: argparse.Namespace) -> int:
+    """
+    Import a ticket's reviewed Xray test cases into Jira. Reads XRAY_DIR/<TICKET>/<TICKET>.xray.json
+    from the test repo - by default from the base branch (what was merged after review) for the
+    agent's own clone, or from the working tree when the test repo is used in place.
+    """
+    from taf.config import SETTINGS, project_path
+    from taf.integrations.github.repository import run_command
+    from taf.integrations.jira import xray, xray_cloud
+
+    repo = project_path(args.test_repo or SETTINGS.test_repo_local_path).resolve() \
+        if (args.test_repo or SETTINGS.test_repo_local_path) else None
+    if repo is None or not repo.is_dir():
+        _out("fail", f"test repo not found: {repo} (set TEST_REPO_LOCAL_PATH or pass --test-repo)")
+        return 2
+    rel = xray.json_file(args.ticket)
+    ref = args.ref or ("" if SETTINGS.no_git else SETTINGS.test_repo_base_branch)
+    env = {"GIT_TERMINAL_PROMPT": "0", "GCM_INTERACTIVE": "never"}
+    if ref:
+        run_command(["git", "fetch", "--quiet", "origin", ref], cwd=repo, timeout_s=120, env=env)
+        shown = run_command(["git", "show", f"origin/{ref}:{rel}"], cwd=repo, timeout_s=60, env=env)
+        if not shown.ok:  # a local-only branch or a commit id
+            shown = run_command(["git", "show", f"{ref}:{rel}"], cwd=repo, timeout_s=60, env=env)
+        if not shown.ok:
+            _out("fail", f"{rel} is not on {ref} in {repo}. Has the qa/{args.ticket} pull request been merged? "
+                         f"(--ref qa/{args.ticket} exports the unmerged branch.)")
+            return 1
+        raw, source = shown.stdout, f"{ref}:{rel}"
+    else:
+        path = repo / rel
+        if not path.is_file():
+            _out("fail", f"{path} not found - run the automation stage for {args.ticket} first")
+            return 1
+        raw, source = path.read_text(encoding="utf-8"), str(path)
+
+    try:
+        tests = json.loads(raw)
+        assert isinstance(tests, list) and all("fields" in t and "steps" in t for t in tests)
+    except (ValueError, AssertionError):
+        _out("fail", f"{source} is not an Xray bulk-import list")
+        return 1
+
+    print(f"source:  {source}")
+    print(f"tests:   {len(tests)}  -> project {tests[0]['fields'].get('project', {}).get('key', '?') if tests else '?'}, "
+          f"folder {tests[0].get('xray_test_repository_folder', '(root)') if tests else ''}")
+    for t in tests:
+        print(f"  - {t['fields'].get('summary', '')}  ({len(t.get('steps') or [])} steps)")
+    if not args.apply:
+        print("\nDry run: nothing was sent. Re-run with --apply to import these into Xray.")
+        return 0
+    if not xray_cloud.configured():
+        _out("fail", "XRAY_CLIENT_ID / XRAY_CLIENT_SECRET are not set in .env (Xray Cloud > Settings > API Keys)")
+        return 2
+    try:
+        result = xray_cloud.import_tests(tests)
+    except xray_cloud.XrayError as exc:
+        _out("fail", str(exc))
+        return 1
+    print(f"\nXray import: {result.get('status')}")
+    for issue in (result.get("result") or {}).get("issues") or []:
+        print(f"  created {issue.get('key')}  {issue.get('self', '')}")
+    for err in (result.get("result") or {}).get("errors") or []:
+        _out("warn", str(err))
+    return 0 if result.get("status") == "successful" else 1
+
+
 def cmd_serve(args: argparse.Namespace) -> int:
     import uvicorn
 
@@ -315,6 +382,15 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--case", action="append", help="case id (repeatable); default: all")
     p.add_argument("--stage", choices=["triage", "architect", "automation"], help="stop after this agent")
     p.set_defaults(fn=cmd_eval)
+
+    p = sub.add_parser("xray", help="Xray test cases kept in the test repo")
+    xsub = p.add_subparsers(dest="xray_command", required=True)
+    x = xsub.add_parser("export", help="import a ticket's reviewed test cases into Xray (dry run unless --apply)")
+    x.add_argument("ticket", help="ticket key, e.g. TB-601")
+    x.add_argument("--ref", help="git ref to read from (default: the base branch, or the working tree in place)")
+    x.add_argument("--test-repo", help="test repo path (default: TEST_REPO_LOCAL_PATH)")
+    x.add_argument("--apply", action="store_true", help="really import (needs XRAY_CLIENT_ID / XRAY_CLIENT_SECRET)")
+    x.set_defaults(fn=cmd_xray_export)
 
     p = sub.add_parser("serve", help="start the API and dashboard")
     p.add_argument("--host")

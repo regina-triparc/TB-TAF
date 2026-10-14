@@ -1,26 +1,77 @@
 # Autonomous QA Multi-Agent Framework
 
-A FastAPI + LangChain + LangGraph service that takes a Jira ticket in **Ready for QA** and runs a full QA cycle without a person in the loop:
+A FastAPI + LangChain + LangGraph service that takes a Jira ticket in **Ready for QA** and runs a QA cycle:
 
 1. Triage the acceptance criteria and the PR diff.
-2. Design a functional and non-functional test plan, plus Xray test cases (as bulk-import JSON and as CSV).
-3. Generate a Playwright **TypeScript** spec, commit it to the test repo, and run it.
+2. Design a functional and non-functional test plan, as Xray test cases.
+3. Write the Xray test cases and a Playwright **TypeScript** spec to the test repo
+   ([tripbuilder-e2e](https://github.com/regina-triparc/tripbuilder-e2e)), commit them together on a
+   `qa/<TICKET>` branch for review, and run the spec.
 4. Summarise the terminal logs into a Markdown report.
-5. Send the verdict back to n8n, which updates Jira and imports the test cases into Xray.
+5. After the pull request is merged, export the reviewed test cases to Xray in Jira.
 
 ```
-Jira ──"Ready for QA"──▶ n8n ──POST /qa/runs──▶ QA service ──callback──▶ n8n ──▶ Jira status + comment
-                         (diff, Azure/DB logs)       │                         └──▶ Xray bulk import (JSON)
-                                                     └──REST──▶ Paperclip (issue per run, live comments, cost ledger, budget stop)
+Jira (ticket + linked PRs) ─▶ QA service ─▶ tripbuilder-e2e, branch qa/<TICKET>:
+TripArc.TripBuilder (diff) ─┘   (dashboard          xray/<TICKET>/   test cases (JSON, CSV, plan)
+                                 or CLI)            e2e/qa/<TICKET>.spec.ts
+                                                       │  pull request, review, merge
+                                                       ▼
+                                          python -m taf xray export <TICKET> ─▶ Xray in Jira
 ```
 
-Everything can also be driven from a terminal and from a local dashboard, with
-no n8n, Jira or API key: the repo ships a seeded ticket (TB-601) and an
-`offline` model provider, so a fresh clone can run the pipeline end to end.
+Runs are started from a local dashboard or a terminal. n8n and Paperclip are
+optional integrations that no local run uses; see
+[Services and alternatives](#services-and-alternatives).
 
-## Quick start (any machine, about 2 minutes)
+**Contents:**
+- Get started: [Run the demo](#run-the-demo) · [Quick start](#quick-start-any-machine-no-setup)
+- How it works: [How it works](#how-it-works) · [Services and alternatives](#services-and-alternatives)
+- Scripts and flows: [One-command scripts](#one-command-scripts) ·
+  [Real vs demo flow](#two-workflows-real-jira-and-demo-seed) · [Xray](#xray-test-cases-generated-reviewed-then-exported)
+- Reference: [Terminal commands](#terminal-commands) · [Project layout](#project-layout) ·
+  [LLM router](#llm-router) · [Skills](#skills) · [Evals](#evals) · [Architecture](#architecture) ·
+  [Setup details](#setup-details) · [Settings](#settings) · [Running the service](#running-the-service) ·
+  [Optional: n8n](#optional-n8n-integration) · [Operational notes](#operational-notes)
 
-Needs Python 3.11+. Nothing else: no API key, no Ollama, no Jira, no Node.
+---
+
+## Run the demo
+
+The demo takes the seeded ticket **TB-601** through the whole pipeline with one
+click. Its test cases and Playwright test land in your local tripbuilder-e2e,
+and the test runs against UAT. Nothing is committed, pushed or sent to Jira.
+
+**What you need:**
+- Python 3.11+, Node 20+ and git;
+- read access to TB-TAF and tripbuilder-e2e;
+- a UAT test login in `tripbuilder-e2e\.env`;
+- a model: Ollama (`qwen2.5-coder:3b`, ~2.5 GB free RAM) or an `ANTHROPIC_API_KEY`.
+
+Optionally, read access to `TravelEdge/TripArc.TripBuilder` gives the agents the
+real PR diff.
+
+With TB-TAF and tripbuilder-e2e cloned side by side (e.g. `C:\code\TB-TAF` and
+`C:\code\tripbuilder-e2e`):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\start-dashboard.ps1
+```
+
+```bash
+scripts/start-dashboard.sh
+```
+
+Then click **Full run** on TB-601.
+
+**[docs/DEMO.md](docs/DEMO.md) is the full runbook.** It covers the one-time setup,
+what happens in each phase and how long it takes, where to look at the results,
+what to review, how to clean up, variations (Claude, no model, real Jira, push),
+and troubleshooting.
+
+## Quick start (any machine, no setup)
+
+This proves the pipeline runs. It needs only Python 3.11+: no API key, Ollama,
+Jira, Node or test repo.
 
 ```bash
 python -m venv .venv
@@ -30,11 +81,14 @@ python -m venv .venv
 source .venv/bin/activate
 ```
 
-On Windows PowerShell: create the venv with `py -3.12 -m venv .venv` (plain `python`
-is often the Microsoft Store stub), activate with `.\.venv\Scripts\Activate.ps1`, and
-use `copy .env.example .env` below. Clone to a short path such as `C:\code\TB-TAF`:
-some dependencies have deep file paths that exceed Windows' 260-character limit
-under a long folder, and `pip install` then fails with `No such file or directory`.
+On Windows PowerShell:
+- create the venv with `py -3.12 -m venv .venv` (plain `python` is often the
+  Microsoft Store stub);
+- activate it with `.\.venv\Scripts\Activate.ps1`;
+- use `copy` instead of `cp` below.
+
+Clone to a short path such as `C:\code\TB-TAF`: some dependencies have file paths
+deep enough to exceed Windows' 260-character limit, and `pip install` then fails.
 
 ```bash
 pip install -r requirements.txt
@@ -52,49 +106,96 @@ python -m taf doctor
 python -m taf run TB-601 --provider offline --stage full
 ```
 
-That pushes the seeded ticket through triage → test design → spec generation →
-report and prints what each agent produced. The `offline` provider uses no model:
-its output is mechanical placeholder text that proves the plumbing works, and its
-spec is never written into a test repository.
+That runs the seeded ticket through triage → test design → spec → report. The
+`offline` provider uses no model: its output is placeholder text that proves the
+plumbing works, and it never writes into a test repository.
 
 ```bash
 python -m unittest
 ```
 
-runs the smoke tests (same offline setup, no network, a few seconds).
+runs the smoke tests (offline, no network, a few seconds).
 
-### A real run
+---
 
-Pick a model, then run the same command without `--provider offline`:
+## How it works
 
-| You have | Set in `.env` | Then |
-|---|---|---|
-| an Anthropic API key | `ANTHROPIC_API_KEY=...` (`LLM_PROVIDER=auto` then picks Claude) | `python -m taf run TB-601` |
-| Ollama | nothing (`auto` with no key means Ollama); run `ollama pull qwen2.5-coder:7b` and `ollama serve` | `python -m taf run TB-601` |
+One run of **Full run** (dashboard) or `python -m taf run TB-601 --stage full`:
 
-To also **write, push and run** the generated spec, use `--stage automation` or
-`--stage full`. The spec goes to a `qa/<TICKET>` branch of the private
-[tripbuilder-e2e](https://github.com/regina-triparc/tripbuilder-e2e) repo. You need
-access to that repo and `TEST_REPO_ENV_FILE` set to your UAT test login; see
-[TypeScript test repository](#typescript-test-repository-playwright).
+| # | Step | Code | External service it touches |
+|---|---|---|---|
+| 0 | **Ticket.** Summary, description and linked PRs come from the ticket source: the seed file (demo) or the Jira API (real). | `taf/integrations/jira/board.py` | Jira REST + development panel (real flow only) |
+| 0 | **PR diff.** The linked PRs are fetched with git into a small bare clone, then condensed per agent: every file listed, frontend templates shown first. | `taf/integrations/github/pull_requests.py` | GitHub via git: `TravelEdge/TripArc.TripBuilder` (read) |
+| 1 | **Triage:** acceptance criteria, impacted areas, risks, open questions. | `taf/agents/triage/` | the model (via the LLM router) |
+| 2 | **Test Architect:** risk-based test plan, as Xray test cases (JSON + CSV). | `taf/agents/architect/` | the model |
+| 3 | **Automation Engineer:** writes `xray/<TICKET>/` and `e2e/qa/<TICKET>.spec.ts` into the test repo. It checks the spec loads (`playwright test --list`) and repairs it if not, commits both on `qa/<TICKET>` (or leaves them uncommitted locally), and runs the spec. | `taf/agents/automation/`, `taf/integrations/github/repository.py` | the model; GitHub via git: `tripbuilder-e2e` (push, managed mode only); the UAT portal (Playwright) |
+| 4 | **Report Synthesizer:** a Markdown report from the logs. The verdict header is built in Python, so the model cannot change it. | `taf/agents/reporter/` | Ollama, or the built-in fallback |
+| - | **Recorded:** every phase and its output, for the dashboard. | `taf/runs/store.py` | none (local SQLite) |
+| later | **Export:** after the PR is merged, `taf xray export` imports the reviewed test cases. | `taf/integrations/jira/xray_cloud.py` | Xray Cloud API |
 
-### The dashboard
+The agents run in that order inside the service (LangGraph,
+`taf/agents/graph.py`). If one fails, the run skips straight to the report. Every
+agent gets its model from the **LLM router** (`taf/llm/router.py`): Claude,
+Ollama or offline, chosen per run and per agent. Each agent is a folder with its
+code, its prompt as Markdown, and a README; see [taf/agents/README.md](taf/agents/README.md).
 
-```bash
-python -m taf serve
+## Services and alternatives
+
+What each part of the system talks to, and what can replace it. **Bold** is what
+the demo and the local scripts use.
+
+| Concern | Default | Alternatives | Switch with |
+|---|---|---|---|
+| **Starting a run** | **Dashboard button**, `taf run`, `scripts/*` | `POST /dashboard/api/start` (HTTP); `POST /qa/runs` (n8n or any tool, optional) | - |
+| **Orchestration** (which agent runs when) | **LangGraph in the service** | - (Paperclip only mirrors runs; it does not trigger agents) | - |
+| **Ticket source** | **seed file** (demo) | Jira API (real flow); the request body of `POST /qa/runs` | `TICKET_SOURCE`, `--source`, `-Source` |
+| **Code under test (diff)** | **git: TripArc.TripBuilder**, PRs from Jira or the seed | a diff sent in `POST /qa/runs`; no diff (`FETCH_PR_DIFFS=false`) | `SOURCE_REPO_URL`, `FETCH_PR_DIFFS` |
+| **Model** | **`auto`:** Claude if `ANTHROPIC_API_KEY` is set, else Ollama | `claude`; `ollama`; `offline` (no model); per-agent hybrid (`CLOUD_AGENTS`) | `LLM_PROVIDER`, `--provider`, the dashboard's Model selector |
+| **Report formatting** | **Ollama** | built-in deterministic fallback (automatic when Ollama is down or offline) | - |
+| **Where tests are written** | **local tripbuilder-e2e working copy, uncommitted** (scripts) | the agent's own clone, branch `qa/<TICKET>` committed and pushed (`.env` default); any other Playwright repo | `-TestRepo`, `-Push`, `TEST_REPO_*` |
+| **Running the tests** | **Playwright, `qa-agent` project, against UAT** | any target (`--target-url`, `DASHBOARD_TARGET_URL`) | - |
+| **Xray** | **files in the test repo, reviewed in the PR** | `taf xray export --apply` (Xray Cloud API); manual import of the CSV; n8n callback import (optional) | `XRAY_*` |
+| **Run history** | **SQLite** (`qa_runs.db`) | - | `QA_DB_PATH` |
+| **Run mirror, cost ledger, budget stop** | **service log + local token caps** | Paperclip (optional) | `PAPERCLIP_API_URL`, `PAPERCLIP_API_KEY` |
+| **Agent know-how** | **`skills/*/SKILL.md`** (Claude routes) | also on Ollama; off | `SKILLS_*` |
+| **Real selectors of the app** | **page contract** (`skills/page-contracts/tripbuilder-tsp.md`) | none (the model guesses) | `PAGE_CONTRACT_PATH` |
+| **GitHub authentication** | **your normal git sign-in** (Git Credential Manager) | fine-grained PAT | `GITHUB_TOKEN` |
+
+---
+
+## One-command scripts
+
+Both scripts do the same setup first:
+1. create `.venv` and install the requirements (again only when they change);
+2. create `.env` from `.env.example` if it is missing;
+3. point the service at your **local tripbuilder-e2e clone in in-place mode**: no
+   git operations, nothing committed or pushed (unless `-Push`);
+4. run `doctor`.
+
+The shared setup is in `scripts/lib/`.
+
+### `start-dashboard` - the board, then Full run
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\start-dashboard.ps1
 ```
 
-Open <http://127.0.0.1:8000/dashboard>. It lists the queue (Jira, or the seed
-file), starts stages with a click, shows what each agent did, and has a **Model**
-selector that switches the LLM provider for new runs. Runs started from the
-terminal appear there too. `uvicorn main:app --host 127.0.0.1 --port 8000` still
-works and is equivalent.
+```bash
+scripts/start-dashboard.sh
+```
 
-## One command: the seeded ticket to a local test
+Starts the service and opens <http://127.0.0.1:8000/dashboard>. Stop with Ctrl+C.
 
-For someone who has cloned this repo, been sent the `.env` values, and cloned
-[tripbuilder-e2e](https://github.com/regina-triparc/tripbuilder-e2e) next to it
-(as `../tripbuilder-e2e`):
+| Option (PowerShell / bash) | Default | Effect |
+|---|---|---|
+| `-Source` / `--source` | `seed` | `seed`: the demo queue (TB-601). `jira`: your real Jira queue. `auto`: Jira if configured. |
+| `-Provider` / `--provider` | from `.env` | Startup model; the board's **Model** selector switches it while running. |
+| `-TestRepo` / `--test-repo` | `../tripbuilder-e2e` | Your tripbuilder-e2e clone, if it is not next to this repo. |
+| `-Push` / `--push` | off | Use the agent's own clone and push `qa/<TICKET>` branches instead. |
+| `-Port` / `--port` | `8000` | Refuses to start if the port is taken - usually an older service still running with old settings. |
+| `-NoBrowser` / `--no-browser` | off | Don't open the browser. |
+
+### `run-seeded` - the same in a terminal
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\run-seeded.ps1
@@ -104,27 +205,13 @@ powershell -ExecutionPolicy Bypass -File scripts\run-seeded.ps1
 scripts/run-seeded.sh
 ```
 
-The script:
-
-1. creates `.venv` and installs the requirements (again only when they change);
-2. creates `.env` from `.env.example` if it is missing;
-3. runs `doctor`;
-4. runs **TB-601 from the seed file** through every stage;
-5. writes `e2e/qa/TB-601.spec.ts` into your local tripbuilder-e2e clone and runs it.
-
-Nothing is committed or pushed. Discard the spec with
-`git checkout -- e2e/qa/TB-601.spec.ts` in the test repo.
-
-| Option (PowerShell / bash) | Effect |
-|---|---|
-| `-Provider claude` / `--provider claude` | Pick the model; `offline` proves the pipeline but writes no spec. Default: `LLM_PROVIDER` from `.env`. |
-| `-TestRepo C:\code\tripbuilder-e2e` / `--test-repo ...` | Where your tripbuilder-e2e clone is. |
-| `-Stage architect` / `--stage architect` | Stop earlier. Without a tripbuilder-e2e clone the script stops after the test plan anyway. |
-| `-Push` / `--push` | Use the agent's own clone from `.env` and push `qa/TB-601` instead of writing locally. |
-| `-Ticket TB-123` / `--ticket TB-123` | Another seeded ticket. |
-
-The test signs in with `TBA_E2E_EMAIL` / `TBA_E2E_PASSWORD` from the test
-repo's own `.env`.
+Runs **TB-601 from the seed file** through every stage, printing each phase and
+the outputs. It writes `e2e/qa/TB-601.spec.ts` and `xray/TB-601/` into your local
+tripbuilder-e2e and runs the test. At the end it prints where the files are and
+how to discard them. Options: `-Ticket`, `-Stage`, `-Provider`, `-TestRepo`,
+`-Push` (as above). Without a tripbuilder-e2e clone it stops after the test plan.
+The generated test signs in with `TBA_E2E_EMAIL` / `TBA_E2E_PASSWORD` from the
+test repo's own `.env`.
 
 ## Two workflows: real (Jira) and demo (seed)
 
@@ -135,11 +222,10 @@ repo's own `.env`.
 | Select it with | `TICKET_SOURCE=jira`, or `--source jira` | `TICKET_SOURCE=seed`, or `--source seed` |
 | Needs | a Jira API token | nothing |
 
-`TICKET_SOURCE=auto`, the default, uses Jira when all three Jira variables are set
-and the seed file otherwise. `--source` on `taf run` / `taf board`, or `"source"`
-in `POST /dashboard/api/start`, overrides it for one call. So
-`python -m taf run TB-601 --source seed` is always the demo, even on a machine
-with Jira configured.
+`TICKET_SOURCE=auto`, the default in `.env`, uses Jira when all three Jira
+variables are set, and the seed file otherwise. `--source` on `taf run` /
+`taf board`, `-Source` on the scripts, or `"source"` in `POST /dashboard/api/start`
+override it. So `python -m taf run TB-601 --source seed` is always the demo.
 
 ```bash
 python -m taf board --source jira
@@ -176,9 +262,46 @@ The model never connects to GitHub itself. For each run the service:
 **Local model and real diffs.** A 3B model with a 4,096-token context sees about
 6,000 characters of diff: the overview plus the three most relevant templates.
 That is enough to pick up real labels and button names, not to reason about the
-whole change. For a real ticket, use Claude for triage and automation, or at
-least `CLOUD_AGENTS=automation`. Run local models with 8 GB or more of free RAM;
-below about 2.5 GB free, one call can take an hour and time out.
+whole change. In practice it plans 2 test cases for TB-601's ~13 criteria. For a
+real ticket, use Claude for triage and automation, or at least
+`CLOUD_AGENTS=automation`.
+
+## Xray test cases: generated, reviewed, then exported
+
+Test cases go through the same review as the spec. For each ticket, the Automation
+Engineer writes `xray/<TICKET>/` into the test repo, next to `e2e/qa/<TICKET>.spec.ts`:
+
+| File | What it is |
+|---|---|
+| `<TICKET>.xray.json` | Xray Cloud bulk-import payload: exactly what gets exported. Edit it in review to change what is imported. |
+| `<TICKET>.xray.csv` | The same cases for Xray's Test Case Importer (manual import, audit copy). |
+| `<TICKET>.test-plan.md` | The plan in readable form, for reviewers. |
+
+They are committed together with the spec in one commit on `qa/<TICKET>`. With the
+local scripts (in-place mode) they are written but not committed. They are written
+even when a plan has no automatable cases.
+
+Export happens only after review, from what was merged:
+
+```bash
+python -m taf xray export TB-601
+```
+
+```bash
+python -m taf xray export TB-601 --apply
+```
+
+The first is a dry run: it reads `xray/TB-601/TB-601.xray.json` from the test repo's
+base branch (`main`), meaning the merged version, and lists what would be imported.
+It refuses if the PR has not been merged. `--apply` imports it with
+`XRAY_CLIENT_ID` / `XRAY_CLIENT_SECRET` (Xray Cloud > Settings > API Keys) and
+prints the created Jira keys. Other options:
+- `--ref qa/TB-601` exports an unmerged branch.
+- With the test repo used in place (`TEST_REPO_NO_GIT=true`), the working-tree
+  file is read.
+
+The tests are filed under `XRAY_TEST_FOLDER` and linked to the story with
+`XRAY_REQUIREMENT_LINK_TYPE`. Exporting twice creates a second set, so export once.
 
 ## Terminal commands
 
@@ -186,7 +309,7 @@ Run from the project root with the virtualenv active.
 
 | Command | What it does |
 |---|---|
-| `python -m taf doctor` | Checks Python, `.env`, the provider (key set / Ollama reachable), the queue, the test repo, Node and the page contract. Exits 1 on a blocking problem. |
+| `python -m taf doctor` | Checks Python, `.env`, the provider (key set / Ollama reachable), the queue, the test repo and its login, Node and the page contract. Exits 1 on a blocking problem. |
 | `python -m taf board [--source jira\|seed]` | Lists the queue: Jira (real) or `data/seed_tickets.json` (demo). |
 | `python -m taf providers` | Shows the router: which provider and model each agent uses. |
 | `python -m taf providers --set ollama --server http://127.0.0.1:8000` | Switches the provider of a **running** service. Not persisted; `LLM_PROVIDER` in `.env` is the startup default. |
@@ -195,21 +318,19 @@ Run from the project root with the virtualenv active.
 | `python -m taf run TB-601 --show all` | Also prints execution logs. `--json` prints the whole final state instead. |
 | `python -m taf run TB-622 --source jira` | The real flow: ticket, linked PRs and their diff from Jira and git. `--source seed` forces the demo. |
 | `python -m taf run ABC-1 --summary "..." --description "..."` | A ticket that is in neither Jira nor the seed file. |
-| `scripts/run-seeded.ps1` / `scripts/run-seeded.sh` | Everything above in one go for the seeded ticket - see [One command](#one-command-the-seeded-ticket-to-a-local-test). |
+| `python -m taf xray export TB-601 [--apply]` | Exports the ticket's reviewed Xray test cases from the test repo (dry run without `--apply`). |
 | `python -m taf skills` | Lists skills and the agents they apply to. |
 | `python -m taf eval --provider ollama` | Scores agent output against `evals/cases`. |
-| `python -m taf serve [--reload]` | Starts the API and the dashboard. |
+| `python -m taf serve [--reload] [--port N]` | Starts the API and the dashboard. |
+| `scripts/start-dashboard.*`, `scripts/run-seeded.*` | One-command setup and run - see [One-command scripts](#one-command-scripts). |
 | `python -m unittest` | Offline smoke tests. |
 
 To run a generated spec by hand, from your own clone of tripbuilder-e2e (after
-`git fetch` and `git checkout qa/TB-601`):
+`git fetch` and `git checkout qa/TB-601`, or straight after a local run):
 
 ```bash
 npx playwright test e2e/qa/TB-601.spec.ts --project=qa-agent --reporter=list
 ```
-
-[docs/DEMO.md](docs/DEMO.md) has the PowerShell form of the whole demo, including
-the HTTP calls.
 
 ## Project layout
 
@@ -223,21 +344,26 @@ taf/                           the service, as a package
     router.py                  the LLM router: claude / ollama / auto / offline, per agent and per run
     offline.py                 the no-model provider
     pricing.py, budget.py      token pricing and the cloud spend guard
-  agents/                      one module per agent
-    triage.py, architect.py, automation.py, reporter.py, closeout.py
+  agents/                      one folder per agent: agent.py + Markdown prompt(s) + README.md
+    triage/                    Agent 1  criteria, impacted areas, risks           prompt.md
+    architect/                 Agent 2  test plan + Xray test cases               prompt.md, local-model-limits.md
+    automation/                Agent 3  spec + xray/ into the test repo, run      prompt.md, repair-prompt.md
+    reporter/                  Agent 4  logs -> Markdown report                   prompt.md
+    closeout/                  Agent 5  optional n8n callback (unused locally)
     base.py                    the envelope every agent runs in (events, error handling)
     schemas.py, state.py       structured outputs and the shared LangGraph state
-    graph.py                   the LangGraph wiring
+    graph.py, prompts.py       the LangGraph wiring; the .md prompt loader
   integrations/
-    jira/board.py              Jira queue for the dashboard (falls back to the seed file)
-    jira/xray.py               Xray CSV and bulk-import JSON
-    github/repository.py       the Playwright test repo: git, install, playwright
-    github/pull_requests.py    PR diffs from the source repo, condensed per agent
-    paperclip/control_room.py  Paperclip mirror and budget checks
+    jira/board.py              ticket source: Jira queue + issues + linked PRs, or the seed file
+    jira/xray.py               Xray test cases (JSON, CSV, plan) as written to the test repo
+    jira/xray_cloud.py         Xray Cloud import, used by `taf xray export`
+    github/pull_requests.py    reads PR diffs from the source repo; condenses them per agent
+    github/repository.py       the test repo: clone, branch, write, commit, push, npm, playwright
+    paperclip/control_room.py  optional Paperclip mirror and budget checks
   skills.py                    loads skills/*/SKILL.md into agent prompts
   runs/
     stages.py                  runs some stages for one ticket (dashboard and CLI)
-    registry.py                the n8n flow's background runner
+    registry.py                background runner for POST /qa/runs (optional n8n flow)
     store.py                   SQLite run history
   api/
     app.py                     /health, /qa/runs
@@ -245,10 +371,11 @@ taf/                           the service, as a package
 skills/                        Markdown know-how appended to agent prompts (Playwright, test design)
   page-contracts/              real selectors of an app under test (PAGE_CONTRACT_PATH)
 evals/                         eval cases, graders and runner
-data/seed_tickets.json         the ticket(s) used when Jira is not configured
+data/seed_tickets.json         the demo ticket(s): TB-601 with its PRs
+scripts/                       start-dashboard (board + Full run) and run-seeded (terminal), .ps1 and .sh
+  lib/                         their shared setup
 tests/                         offline smoke tests (python -m unittest)
-scripts/run-seeded.ps1, .sh    one command: seeded ticket -> spec in your local tripbuilder-e2e
-docs/                          setup guides (macOS, Windows, Ollama-only) and the demo runbook
+docs/                          DEMO.md (demo runbook); SETUP*.md (full hosted stack incl. optional n8n/Paperclip)
 ```
 
 ## LLM router
@@ -266,8 +393,8 @@ client, applies the budget guard and checks stop reasons.
 
 Which provider a run uses, most specific first:
 
-1. the run's own override: `--provider` on `taf run`, or `"provider"` in the body of
-   `POST /dashboard/api/start` or `POST /qa/runs`;
+1. the run's own override: `--provider` on `taf run` / the scripts, or
+   `"provider"` in the body of `POST /dashboard/api/start` or `POST /qa/runs`;
 2. the service default: `LLM_PROVIDER` at startup, switchable while running with the
    dashboard's Model selector, `POST /dashboard/api/provider`, or
    `python -m taf providers --set ... --server ...`;
@@ -282,8 +409,9 @@ A run's provider is fixed when it starts; switching affects the next run.
 A skill is a Markdown file of team know-how appended to an agent's system prompt:
 how to choose Playwright locators, how to assert API calls, how to order test
 cases by risk. Adding expertise to an agent means adding a folder under `skills/`,
-not editing Python. Six ship with the repo, four of them for Playwright. Skills
-apply to Claude routes; on Ollama they are off unless `SKILLS_ON_LOCAL=true`,
+not editing Python. Six ship with the repo, four of them for Playwright.
+
+Skills apply to Claude routes; on Ollama they are off unless `SKILLS_ON_LOCAL=true`,
 because a small context window fills fast. Format and settings:
 [skills/README.md](skills/README.md).
 
@@ -296,35 +424,28 @@ touching a test repo. `python -m taf eval --provider offline` is the free plumbi
 check; run it with `claude` or `ollama` after changing a prompt or skill. Details:
 [evals/README.md](evals/README.md).
 
+---
+
 ## Architecture
 
-### Hybrid LLM routing
+### Model per agent (Claude routes)
 
-| Node | Agent | Engine | Why |
-|---|---|---|---|
-| 1 | Intake Triager | Claude **Sonnet 5.5**, effort `medium` | Extracting acceptance criteria and classifying risk from the ticket and diff |
-| 2 | Test Architect | Claude **Sonnet 5.5**, effort `high` | Risk-based test design and the Xray matrix |
-| 3 | TS Automation Engineer | Claude **Opus 5.5**, effort `high` + local git/pnpm | The hardest task: runnable Playwright code for an app it only sees through a diff, repaired from Playwright's own loader errors |
-| 4 | Report Synthesizer | Qwen 2.5-Coder 7B on Ollama (local, free) | Log parsing and formatting |
-| 5 | Closeout | HTTP | Sends the n8n callback |
+| Agent | Default engine | Why |
+|---|---|---|
+| 1 Intake Triager | Claude **Sonnet 5.5**, effort `medium` | Extracting criteria and classifying risk from the ticket and diff |
+| 2 Test Architect | Claude **Sonnet 5.5**, effort `high` | Risk-based test design and the Xray matrix |
+| 3 TS Automation Engineer | Claude **Opus 5.5**, effort `high` + local git/npm/Playwright | The hardest task: runnable Playwright code for an app it only sees through a diff, repaired from Playwright's own loader errors |
+| 4 Report Synthesizer | Ollama (`OLLAMA_MODEL`, local, free) | Log parsing and formatting |
+| 5 Closeout | HTTP | Optional n8n callback; not used by local runs |
 
-Each agent's model, effort and output limit can be changed in `.env` (`CLAUDE_<AGENT>_MODEL` / `_EFFORT` / `_MAX_TOKENS`). Claude Haiku 4.5 isn't used: it can be retired as soon as October 15, 2026.
+Each agent's model, effort and output limit can be changed in `.env`
+(`CLAUDE_<AGENT>_MODEL` / `_EFFORT` / `_MAX_TOKENS`). On `ollama` all three model
+agents use `OLLAMA_MODEL`, or a per-agent `OLLAMA_<AGENT>_MODEL`.
 
-Structured output (triage and test plan) uses Claude's native structured outputs (`output_config.format`). LangChain's default method forces a tool call, which Opus 5.5 rejects and Sonnet 5.5 doesn't enforce. No `temperature` is sent: these models think adaptively, and thinking depth is controlled with `effort`.
-
-### Spec repair loop and prompt caching
-
-After Opus writes the spec, the service runs `playwright test <spec> --list`. This loads and transpiles the file and collects its tests without starting a browser, so it only takes a few seconds. If the spec doesn't load (syntax error, bad import, no tests), the loader output goes back to Opus as a follow-up turn, up to `SPEC_REPAIR_ATTEMPTS` times. Only a spec that loads is executed. The loop only fixes specs that **won't load**; it never "fixes" tests that fail, because a failing test is a QA result.
-
-That repair turn is where prompt caching pays off:
-
-- The context Opus receives (triage, test cases and diff) carries a `cache_control` breakpoint, and each repair message adds one.
-- A repair request re-sends the same system prompt and context, which Opus reads from cache at **5% of its input price** ($0.20 instead of $4 per million tokens).
-- The first request pays the 5-minute cache-write price (1.25x). Caching comes out ahead as soon as one repair happens.
-
-Triage and the test plan are single calls, and caches aren't shared between models. Caching those calls would only add the write premium, so it's off by default. Turn it on with `PROMPT_CACHE_AGENTS=all` if you add retries of your own.
-
-Costs are calculated per model from Anthropic's published prices, with cache writes and reads each at their own rate. They appear in the report header, in the callback's `metadata.cloud_cost_usd`, and in Paperclip's cost ledger.
+Structured output (triage and test plan) uses Claude's native structured outputs
+(`output_config.format`). LangChain's default method forces a tool call, which
+Opus 5.5 rejects and Sonnet 5.5 doesn't enforce. No `temperature` is sent: these
+models think adaptively, and thinking depth is controlled with `effort`.
 
 ### LangGraph pipeline
 
@@ -334,65 +455,116 @@ START → intake_triager → test_architect → automation_engineer → report_s
               └── aborted ──────┴───────────────────────────────────────┘
 ```
 
-If a cloud node aborts (budget cap hit or an unrecoverable LLM error), the graph jumps straight to the report and closeout. **n8n always gets a callback**, with `QA Failed` and the reason.
+If an agent aborts (budget cap hit or an unrecoverable model error), the graph
+jumps straight to the report, so every run ends with a verdict and the reason.
+The dashboard and CLI run the same agents stage by stage
+(`taf/runs/stages.py`) and stop after the report. `closeout` runs only for
+`POST /qa/runs`.
 
-**Shared state** (`QAState` in `taf/agents/state.py`): `ticket_id`, `summary`, `description`, `github_diff`, `target_url`, `test_plan`, `generated_typescript_code`, `execution_logs`, `execution_passed`, `xray_csv_content`, `final_report`, plus `xray_tests_json`. It also carries operational fields such as `run_id`, `git_branch`, `errors` and `aborted`.
+**Shared state** (`QAState` in `taf/agents/state.py`):
+- ticket and inputs: `ticket_id`, `summary`, `description`, `github_diff`,
+  `pull_requests`, `target_url`;
+- agent outputs: `triage_analysis`, `test_plan`, `test_cases`, `xray_tests_json`,
+  `xray_csv_content`, `generated_typescript_code`, `execution_logs`,
+  `execution_passed`, `final_report`;
+- operational fields: `run_id`, `llm_provider`, `ticket_source`, `git_branch`,
+  `xray_files`, `errors` and `aborted`.
 
-### Node 3 in detail
+### The automation step in detail
 
-1. Claude writes `tests/qa/<TICKET>.spec.ts`. Every test title is prefixed with `[TC-XXX]` so results trace back to Xray.
-2. The service takes a lock on the shared test-repo clone, then runs:
-   `git fetch` → `git checkout <base>` → `git pull --ff-only` → `git checkout -B qa/<TICKET>` → `git add` → `git commit` → `git push -u origin qa/<TICKET>`.
-   It uses `-B` rather than `-b` so that re-running the same ticket works. A rejected push is retried with `--force-with-lease`.
-3. It then runs `pnpm install` and `pnpm exec playwright test <spec> --reporter=line` with `BASE_URL=<target_url>` and `CI=1`, and captures stdout and stderr.
+1. The service takes a lock on the test repo (one run at a time), then prepares it:
+   - **Managed clone** (`TEST_REPO_NO_GIT=false`): `git fetch` → `git checkout <base>`
+     → `git pull --ff-only` → `git checkout -B qa/<TICKET>`. `-B` makes re-runs of
+     a ticket reset its branch.
+   - **In place** (`TEST_REPO_NO_GIT=true`, the scripts): no git commands at all.
+2. It writes `xray/<TICKET>/` (JSON, CSV, readable plan).
+3. It installs dependencies once if `node_modules` is missing (`npm ci`), then
+   writes `e2e/qa/<TICKET>.spec.ts`. Every test title is prefixed with `[TC-XXX]`,
+   so results trace back to Xray.
+4. It runs `playwright test <spec> --list`. This loads and transpiles the spec
+   without starting a browser, in seconds. If the spec doesn't load (syntax error,
+   bad import, no tests), the loader output goes back to the model, up to
+   `SPEC_REPAIR_ATTEMPTS` times. The loop only fixes specs that **won't load**; it
+   never "fixes" tests that fail, because a failing test is a QA result.
+5. It commits the spec and the Xray files in one commit and pushes `qa/<TICKET>`
+   (managed clone; a rejected push is retried with `--force-with-lease`). In place,
+   they stay uncommitted.
+6. It runs `playwright test <spec> --project=qa-agent` with `BASE_URL=<target>`,
+   `CI=1` and the test login from `TEST_REPO_ENV_FILE`, capturing the output.
 
 Error handling:
-
-- **Remote failures don't stop the run.** If fetch, pull or push fails, the problem is logged and the tests still run.
-- **Local failures skip the tests.** If checkout, write or commit fails, or pnpm is missing, the run is marked failed and the reason goes into the report.
+- **Remote failures don't stop the run.** If fetch, pull or push fails, the
+  problem is logged and the tests still run.
+- **Local failures skip the tests.** If checkout, write or commit fails, the run is
+  marked failed and the reason goes into the report.
 - **Nothing hangs.** Every subprocess has a timeout.
+- **The offline provider writes nothing** to the test repo: its placeholders must
+  never replace real tests.
 
-### Paperclip Control Room
+### Spec repair and prompt caching
 
-The service talks to Paperclip's REST API (`<PAPERCLIP_API_URL>/api/...`) as a Paperclip **agent**, using that agent's API key. It looks up the agent and company IDs from the key, so there are no IDs to configure. Every QA run is mirrored into Paperclip:
+The repair turn is where prompt caching pays off on Claude:
+- The context the Automation Engineer receives (triage, test cases, diff) carries a
+  `cache_control` breakpoint, and each repair message adds one.
+- A repair request re-sends the same prefix, which Opus reads from cache at **5% of
+  its input price**.
+- The first request pays the 5-minute cache-write price (1.25x), so caching comes
+  out ahead as soon as one repair happens.
 
-| QA service | Paperclip |
-|---|---|
-| Run starts | Issue `[TICKET] summary` is created, set to `in_progress` and assigned to the QA agent (in `PAPERCLIP_PROJECT`, if set) |
-| Triage finishes | The issue priority is set from the triage risk level |
-| Each agent finishes, fails or logs | A comment on the issue, which gives you the live execution feed |
-| Each LLM call | A cost event with the model, input tokens, cache-read tokens, output tokens and `costCents`, priced per model including cache rates. Qwen is booked at $0 |
-| Run finishes | The issue moves to `done` (QA Passed) or `blocked` (QA Failed or crashed), and the full report is added as a comment |
-
-Events are delivered in order by one background worker. If Paperclip is offline, runs continue and the events only go to the log.
+Triage and the test plan are single calls, so caching is off for them by default
+(`PROMPT_CACHE_AGENTS=automation`). Costs are computed per model from Anthropic's
+prices, cache tiers included, and appear in the report header.
 
 ### Cost guard
 
-Every Claude call goes through `TokenBudget`, which refuses the call **before** any money is spent if any of these is true:
+Every Claude call goes through `TokenBudget`, which refuses the call **before** any
+money is spent when:
+- the run has hit `MAX_CLOUD_TOKENS_PER_RUN`, or the day has hit
+  `MAX_CLOUD_TOKENS_PER_DAY`;
+- with Paperclip configured: Paperclip has paused the QA agent, or its monthly
+  budget is used up.
 
-- The run has hit `MAX_CLOUD_TOKENS_PER_RUN`, or the day has hit `MAX_CLOUD_TOKENS_PER_DAY`.
-- Paperclip has **paused** the QA agent. Paperclip pauses an agent automatically when it goes over its monthly budget.
-- The agent's `spentMonthlyCents` has reached its `budgetMonthlyCents`.
+A refused call aborts the remaining model steps; the run still ends with a
+`QA Failed` report that says why.
 
-When a call is refused, the run skips the remaining cloud steps and still sends n8n a `QA Failed` callback that explains why. The Paperclip checks are cached for 30 seconds. If Paperclip can't be reached, the service falls back to its own caps (fail-open), so an outage doesn't stop QA.
+### Paperclip Control Room (optional)
 
-> **Agent settings in Paperclip:** turn **off** both *Wake on demand* and the heartbeat for the QA agent. n8n starts runs, not Paperclip. Otherwise Paperclip tries to invoke the agent every time the service assigns it an issue. `/health` warns you if either setting is still on.
+With `PAPERCLIP_API_URL` and `PAPERCLIP_API_KEY` set, every run is mirrored into
+Paperclip as a Paperclip **agent**. The agent and company IDs are discovered from
+the key.
 
-> **Full walkthrough:** [docs/SETUP.md](docs/SETUP.md) (macOS) or [docs/SETUP-windows.md](docs/SETUP-windows.md) (Windows) takes you through setting up Ollama, the test repo, this service, Paperclip, n8n and Jira/Xray in order, with a check after each phase.
+| QA service | Paperclip |
+|---|---|
+| Run starts | Issue `[TICKET] summary` created, `in_progress`, assigned to the QA agent |
+| Triage finishes | Issue priority set from the risk level |
+| Each agent finishes, fails or logs | A comment: the live execution feed |
+| Each model call | A cost event (tokens, cache reads, `costCents`); local models are booked at $0 |
+| Run finishes | Issue moved to `done` (QA Passed) or `blocked` (failed or crashed), with the report |
 
-## Prerequisites
+Paperclip **does not start or assign work.** Runs are started by the dashboard,
+the CLI, the scripts or (optionally) n8n. So in Paperclip, turn **off** *Wake on
+demand* and the heartbeat for the QA agent; `/health` warns if either is on.
+Events are delivered in order by one background worker. If Paperclip is offline,
+runs continue and events only go to the log. Without Paperclip, the same events
+go to the service log.
 
-| Tool | Version | Install (macOS) |
+---
+
+## Setup details
+
+### Prerequisites
+
+| Tool | Version | Needed for |
 |---|---|---|
-| Python | **3.11+** (LangGraph 1.x does not support 3.9) | `brew install python@3.12` |
-| Node.js | 20+ | `brew install node` or nvm |
-| npm or pnpm | ships with Node / `corepack enable pnpm` | Must match the lockfile in your test project (`PACKAGE_MANAGER`). |
-| git | 2.31+ (needs `GIT_CONFIG_COUNT` support) | `brew install git` |
-| Ollama | latest | `brew install ollama` — required for `LLM_PROVIDER=ollama`, and for the report step in either mode. |
+| Python | **3.11+** (LangGraph 1.x does not support 3.9) | everything |
+| Node.js | 20+ (npm ships with it) | the automation stage (writing and running Playwright tests) |
+| git | 2.31+ | reading PR diffs; the test repo |
+| Ollama | latest | `LLM_PROVIDER=ollama`/`auto` without a key, and report formatting (optional: there is a fallback) |
 
-On Windows, follow [docs/SETUP-windows.md](docs/SETUP-windows.md) for the equivalents.
+Windows: install Python from python.org with the py launcher, and clone to a short
+path. [docs/DEMO.md](docs/DEMO.md) has the full Windows walk-through.
 
-## Installation
+### Installation
 
 ```bash
 git clone https://github.com/regina-triparc/TB-TAF.git
@@ -402,67 +574,52 @@ git clone https://github.com/regina-triparc/TB-TAF.git
 cd TB-TAF
 ```
 
-Then follow [Quick start](#quick-start-any-machine-about-2-minutes): virtualenv,
-`pip install -r requirements.txt`, `cp .env.example .env`, `python -m taf doctor`.
-Every setting is described in `.env.example` and in the table below.
+Then either run a script (`scripts/start-dashboard.*`, which sets up everything),
+or follow [Quick start](#quick-start-any-machine-no-setup). Every setting is
+described in `.env.example` and in [Settings](#settings).
 
 ### Local model (Ollama)
 
 ```bash
-ollama pull qwen2.5-coder:7b
+ollama pull qwen2.5-coder:3b
 ```
 
 ```bash
 ollama serve
 ```
 
-Check that the OpenAI-compatible endpoint responds:
-
-```bash
-curl http://localhost:11434/v1/models
-```
-
-If Ollama is unreachable, the Report Synthesizer falls back to a deterministic report. The run still completes.
+Set `OLLAMA_MODEL` to the model you pulled (`.env.example` says
+`qwen2.5-coder:7b`). Check the endpoint with `python -m taf doctor`. If Ollama is
+unreachable, the Report Synthesizer falls back to a deterministic report and the
+run still completes.
 
 ### TypeScript test repository (Playwright)
 
 Generated tests live in their own private repository,
 **[regina-triparc/tripbuilder-e2e](https://github.com/regina-triparc/tripbuilder-e2e)**,
 next to the hand-written TripBuilder suite. Nothing generated is ever written
-into this repo. Ask for access to tripbuilder-e2e if you will run the
-automation stage.
+into this repo. Ask for access to tripbuilder-e2e if you will run the automation
+stage.
 
-With the defaults in `.env.example` the agent keeps **its own clone** of that
-repo in a folder next to this one (`TEST_REPO_LOCAL_PATH=../tripbuilder-e2e-agent`).
-For every ticket it:
+There are two ways to use it:
+- **In place** (what the scripts do): your own clone, `TEST_REPO_NO_GIT=true`.
+  Files are written and left uncommitted for you.
+- **Managed clone** (the `.env.example` default): the agent keeps **its own clone**
+  next to this repo (`TEST_REPO_LOCAL_PATH=../tripbuilder-e2e-agent`). It clones
+  it on the first run, branches `qa/<TICKET>`, commits and pushes. A person then
+  opens the pull request, reviews and merges. Never work in the agent's clone
+  yourself: it switches and resets branches there.
 
-1. clones the repo on the first run, and installs packages with `npm ci`;
-2. checks out `main` and pulls;
-3. creates or resets the branch `qa/<TICKET>`;
-4. writes `e2e/qa/<TICKET>.spec.ts`, and repairs it until Playwright can load it;
-5. commits and pushes `qa/<TICKET>` to GitHub;
-6. runs it with `--project=qa-agent`.
-
-A person then opens a pull request from `qa/<TICKET>` into `main`, reviews the
-spec and merges it. A failing generated test is either a guessed selector (fix
-the spec) or a real finding (report it on the ticket).
-
-Never work in the agent's clone yourself: it switches and resets branches there.
-For your own edits, clone tripbuilder-e2e a second time; its README covers that
-setup.
-
-**One-time setup on a new machine**
-
+**One-time setup on a new machine:**
 - **Repo access.** git pushes with your normal GitHub sign-in (Git Credential
   Manager on Windows and macOS), so `GITHUB_TOKEN` usually stays empty. If a push
   is rejected, create a fine-grained PAT with **Contents: Read and write** on
-  tripbuilder-e2e only. The service sends it per command as an HTTP header
-  through git's environment config, so it never appears in the remote URL,
-  `.git/config`, the process list or logs.
-- **Test login.** Generated specs sign in to UAT through tripbuilder-e2e's
-  `setup` project, which needs `TBA_E2E_EMAIL` / `TBA_E2E_PASSWORD`. Set
-  `TEST_REPO_ENV_FILE` to a `.env` that holds them (for example your own working
-  copy's `../tripbuilder-e2e/.env`). They are passed to Playwright as environment
+  tripbuilder-e2e only. It is sent per command as an HTTP header, never in the
+  remote URL, `.git/config`, the process list or logs.
+- **Test login.** Generated specs sign in to UAT through tripbuilder-e2e's `setup`
+  project, which needs `TBA_E2E_EMAIL` / `TBA_E2E_PASSWORD`. Set
+  `TEST_REPO_ENV_FILE` to a `.env` that holds them, e.g. `../tripbuilder-e2e/.env`;
+  the scripts do this for you. They are passed to Playwright as environment
   variables, so no secrets file is copied into the agent's clone.
 - `python -m taf doctor` checks both, and whether the clone exists yet.
 
@@ -481,104 +638,124 @@ PLAYWRIGHT_EXTRA_ARGS=--reporter=line --project=qa-agent
 
 **Other Playwright projects.** The framework is not tied to TripBuilder. Point
 `TEST_REPO_URL` at any Playwright repo that has:
-
 - `@playwright/test` and a committed lockfile, with `PACKAGE_MANAGER` matching it;
 - a `TEST_SPEC_DIR` folder covered by `testDir`/`testMatch` in
   `playwright.config.ts`, or Playwright reports `0 tests`;
 - a config that reads the base URL from the environment
   (`use: { baseURL: process.env.BASE_URL }`).
 
-To write into an existing checkout with **no** git operations at all, set
-`TEST_REPO_NO_GIT=true` and point `TEST_REPO_LOCAL_PATH` at it. The spec is
-then left uncommitted for you, and nothing is pushed.
-
 ### Page contract (optional but recommended)
 
 `PAGE_CONTRACT_PATH` points at a Markdown file listing the real roles, labels and
 test IDs of the application under test. Without it the Automation Engineer
-invents selectors that do not exist and the generated spec fails on its first
-locator. [skills/page-contracts/tripbuilder-tsp.md](skills/page-contracts/tripbuilder-tsp.md) is the contract for
-the Trip Builder portal and doubles as a format example.
+invents selectors that do not exist, and the generated spec fails on its first
+locator. [skills/page-contracts/tripbuilder-tsp.md](skills/page-contracts/tripbuilder-tsp.md)
+is the contract for the TripBuilder portal and doubles as a format example.
 
-## Environment variables
+---
+
+## Settings
+
+All settings live in `.env` (copied from `.env.example`, which documents each one).
+Relative paths are resolved from the project root. Environment variables override
+`.env`; the scripts use that for their in-place mode.
+
+**Model and router**
 
 | Variable | Default | Description |
 |---|---|---|
 | `LLM_PROVIDER` | `claude` (`auto` in `.env.example`) | `claude`, `ollama`, `auto` or `offline` - see [LLM router](#llm-router). |
-| `CLOUD_AGENTS` | – | Comma list of agents (`triage`,`architect`,`automation`) kept on Claude even when `LLM_PROVIDER=ollama`. |
+| `CLOUD_AGENTS` | – | Agents (`triage`,`architect`,`automation` or `all`) kept on Claude in a local run. |
 | `ANTHROPIC_API_KEY` | – | Required for Claude routes. With `auto`, an empty key means Ollama. |
-| `CLAUDE_TRIAGE_MODEL` / `_EFFORT` / `_MAX_TOKENS` | `claude-sonnet-5-5` / `medium` / `16000` | Model for Agent 1 (Intake Triager). |
-| `CLAUDE_ARCHITECT_MODEL` / `_EFFORT` / `_MAX_TOKENS` | `claude-sonnet-5-5` / `high` / `32000` | Model for Agent 2 (Test Architect). |
-| `CLAUDE_AUTOMATION_MODEL` / `_EFFORT` / `_MAX_TOKENS` | `claude-opus-5-5` / `high` / `64000` | Model for Agent 3 (TS Automation Engineer). `MAX_TOKENS` includes thinking. |
-| `CLAUDE_TIMEOUT_SECONDS` | `600` | Timeout for each Claude request. |
-| `CLAUDE_PRICING_JSON` | built in | Override or add per-model prices in USD per million tokens (for contract rates or new models). |
-| `PROMPT_CACHE_AGENTS` | `automation` | Agents whose context is cached (`triage`, `architect`, `automation`, or `all`). |
-| `PROMPT_CACHE_TTL` | `5m` | `5m` (write 1.25x) or `1h` (write 2x). |
-| `SPEC_REPAIR_ATTEMPTS` | `2` | How often Opus may fix a spec that won't load (0–3). |
+| `CLAUDE_TRIAGE_MODEL` / `_EFFORT` / `_MAX_TOKENS` | `claude-sonnet-5-5` / `medium` / `16000` | Agent 1 on Claude. |
+| `CLAUDE_ARCHITECT_MODEL` / `_EFFORT` / `_MAX_TOKENS` | `claude-sonnet-5-5` / `high` / `32000` | Agent 2 on Claude. |
+| `CLAUDE_AUTOMATION_MODEL` / `_EFFORT` / `_MAX_TOKENS` | `claude-opus-5-5` / `high` / `64000` | Agent 3 on Claude. `MAX_TOKENS` includes thinking. |
+| `CLAUDE_TIMEOUT_SECONDS` | `600` | Timeout per Claude request. |
+| `CLAUDE_PRICING_JSON` | built in | Override or add per-model prices (USD per million tokens). |
+| `PROMPT_CACHE_AGENTS` / `PROMPT_CACHE_TTL` | `automation` / `5m` | Which agents' context is cached; `5m` or `1h`. |
+| `SPEC_REPAIR_ATTEMPTS` | `2` | How often the model may fix a spec that won't load (0–3). |
 | `OLLAMA_BASE_URL` | `http://localhost:11434/v1` | Ollama's OpenAI-compatible endpoint. |
-| `OLLAMA_MODEL` | `qwen2.5-coder:7b` | Local model used by Agent 4. |
-| `OLLAMA_TIMEOUT_SECONDS` | `300` | Timeout for each Ollama request. |
-| `TEST_REPO_LOCAL_PATH` | `../tripbuilder-e2e-agent` in `.env.example` | The agent's own clone of the test repo (relative = from this project's root). Cloned on first use. |
-| `TEST_REPO_NO_GIT` | `false` in `.env.example` | `false` = the agent's own clone: branch, commit, push. `true` = write and run the spec in place in an existing checkout, no git operations. |
-| `GITHUB_TOKEN` | – | Only if your git sign-in cannot push: PAT used to push `qa/*` branches. |
-| `TEST_REPO_ENV_FILE` | – | `.env` whose variables (the UAT test login) are passed to Playwright. |
-| `TEST_REPO_URL` | tripbuilder-e2e in `.env.example` | HTTPS clone URL of the Playwright repo the agent pushes `qa/*` branches to. |
-| `TEST_REPO_BASE_BRANCH` | `main` | Branch that QA branches are created from. |
-| `TEST_SPEC_DIR` | `tests/qa` | Where spec files are written, relative to the repo root. |
-| `GIT_PUSH_ENABLED` | `true` | Set to `false` to commit locally only (useful for dry runs). |
-| `GIT_AUTHOR_NAME` / `GIT_AUTHOR_EMAIL` | `QA Agent` / noreply | Commit identity. |
-| `GIT_TIMEOUT_SECONDS` | `120` | Timeout for each git command. |
-| `PACKAGE_MANAGER` | `npm` in `.env.example` | `npm` or `pnpm`. Must match the lockfile committed in the test project. |
-| `SKIP_DEPENDENCY_INSTALL` | `true` in `.env.example` | Skip the install step when `node_modules` is already present and human-managed. |
-| `PNPM_INSTALL_TIMEOUT_SECONDS` | `600` | Timeout for the dependency install. |
-| `PLAYWRIGHT_TIMEOUT_SECONDS` | `1800` | Timeout for the Playwright test run. |
-| `PLAYWRIGHT_INSTALL_BROWSERS` | `false` | Install Chromium before every run. |
-| `PLAYWRIGHT_EXTRA_ARGS` | `--reporter=line` | Extra CLI arguments for `playwright test`. |
-| `PAPERCLIP_API_URL` | – | Paperclip server, for example `http://localhost:3100` (no `/api`). Leave empty to disable Paperclip. |
-| `PAPERCLIP_API_KEY` | – | API key of the QA agent in Paperclip. |
-| `PAPERCLIP_PROJECT` | – | Project name or UUID that QA issues are filed under (optional). |
-| `PAPERCLIP_ENFORCE_BUDGET` | `true` | Refuse Claude calls while Paperclip has the agent paused or over budget. |
-| `XRAY_PROJECT_KEY` | ticket prefix | Jira project the Xray tests are created in. |
-| `XRAY_TEST_FOLDER` | `AI QA/{ticket_id}` | Xray test-repository folder. |
-| `XRAY_REQUIREMENT_LINK_TYPE` | `Test` | Jira link type used to link each test to the story. |
-| `XRAY_INCLUDE_PRIORITY` | `false` | Send priority names (Highest…Lowest). Only enable this if your Jira uses those names. |
-| `MAX_CLOUD_TOKENS_PER_RUN` | `250000` | Hard cap on Claude tokens per ticket (`0` = off). Prompt-cache reads don't count. |
-| `MAX_CLOUD_TOKENS_PER_DAY` | `2000000` | Hard cap on Claude tokens per day, in memory (`0` = off). |
-| `QA_SERVICE_API_KEY` | – | If set, callers must send it in the `X-API-Key` header. |
-| `HOST` / `PORT` | `127.0.0.1` / `8000` | Bind address for `python -m taf serve` / `python main.py`. |
-| `MAX_DIFF_CHARS`, `MAX_ENV_LOG_CHARS`, `MAX_EXEC_LOG_CHARS_FOR_LLM` | see `.env.example` | Prompt size limits. Longer inputs are truncated in the middle. |
-| `CALLBACK_TIMEOUT_SECONDS` | `30` | Timeout for the n8n callback request. |
-| `LOG_LEVEL` | `INFO` | Python log level. |
-| `OLLAMA_MAX_TOKENS` | `4096` | Output cap per local-model call. |
-| `OLLAMA_MAX_TEST_CASES` | `5` | Plan-size cap for the Test Architect on a local model. |
-| `PAGE_CONTRACT_PATH` | – | Markdown file of real roles/labels/test IDs for the app under test. Relative paths are from the project root. Strongly recommended. |
-| `QA_DB_PATH` | `qa_runs.db` | SQLite file holding run history and per-phase artifacts. Created on first start. |
-| `DASHBOARD_TARGET_URL` | – | Target URL used by runs started from the dashboard buttons. |
-| `JIRA_BASE_URL` / `JIRA_EMAIL` / `JIRA_API_TOKEN` | – | Set all three to make the board poll Jira. With any of them missing it reads `SEED_TICKETS_PATH`. |
-| `SEED_TICKETS_PATH` | `data/seed_tickets.json` | Offline queue; ships with TB-601. |
+| `OLLAMA_MODEL` | `qwen2.5-coder:7b` | Local model (all agents on `ollama`, and the report). |
+| `OLLAMA_TRIAGE_MODEL` / `_ARCHITECT_` / `_AUTOMATION_` | – | Per-agent local model overrides. |
+| `OLLAMA_TIMEOUT_SECONDS` | `300` | Timeout per Ollama request. |
+| `OLLAMA_MAX_TOKENS` / `OLLAMA_MAX_TEST_CASES` | `4096` / `5` | Output cap per local call; plan-size cap on a local model. |
+
+**Ticket source and code under test**
+
+| Variable | Default | Description |
+|---|---|---|
 | `TICKET_SOURCE` | `auto` | `jira` (real flow), `seed` (demo) or `auto` (Jira when configured). |
+| `SEED_TICKETS_PATH` | `data/seed_tickets.json` | Demo tickets; ships with TB-601. |
+| `JIRA_BASE_URL` / `JIRA_EMAIL` / `JIRA_API_TOKEN` | – | The real flow. All three are needed. |
+| `JIRA_JQL` | see `.env.example` | Which tickets the board shows. |
+| `JIRA_POLL_SECONDS` / `JIRA_TIMEOUT_SECONDS` | `60` / `20` | Queue cache time and request timeout. |
 | `SOURCE_REPO_URL` | TripArc.TripBuilder in `.env.example` | Repo the PR diffs are read from, with git. Empty = no diffs. |
 | `SOURCE_REPO_LOCAL_PATH` / `SOURCE_BASE_BRANCH` | `../tripbuilder-src.git` / `develop` | Blobless bare clone used for diffs; base branch of the PRs. |
-| `FETCH_PR_DIFFS` | `true` | Set `false` to run without diffs. |
+| `FETCH_PR_DIFFS` | `true` | `false` runs without diffs. |
 | `DIFF_FOCUS_PATHS` / `DIFF_EXCLUDE_GLOBS` | `apps/` / lockfiles, docs, images | How a large diff is ranked and filtered before prompting. |
-| `OLLAMA_MAX_DIFF_CHARS` | `6000` | Diff budget on local-model routes (`MAX_DIFF_CHARS` applies to Claude). |
+| `MAX_DIFF_CHARS` / `OLLAMA_MAX_DIFF_CHARS` | `120000` / `6000` | Diff budget on Claude / on local routes. |
+| `MAX_ENV_LOG_CHARS`, `MAX_EXEC_LOG_CHARS_FOR_LLM` | see `.env.example` | Other prompt size limits. |
+
+**Test repository and Playwright**
+
+| Variable | Default | Description |
+|---|---|---|
+| `TEST_REPO_URL` | tripbuilder-e2e in `.env.example` | Clone URL of the Playwright repo. |
+| `TEST_REPO_LOCAL_PATH` | `../tripbuilder-e2e-agent` in `.env.example` | The agent's clone (managed), or your checkout (in place). |
+| `TEST_REPO_NO_GIT` | `false` | `true` = in place: write and run, no git operations. |
+| `TEST_REPO_BASE_BRANCH` | `main` | Branch `qa/<TICKET>` branches are created from, and Xray exports read. |
+| `TEST_SPEC_DIR` | `tests/qa` (`e2e/qa` in `.env.example`) | Where specs are written, relative to the repo root. |
+| `TEST_REPO_ENV_FILE` | – | `.env` whose variables (the UAT test login) are passed to Playwright. |
+| `GIT_PUSH_ENABLED` | `true` | `false` commits without pushing. |
+| `GITHUB_TOKEN` | – | Only if your git sign-in cannot push. |
+| `GIT_AUTHOR_NAME` / `GIT_AUTHOR_EMAIL` / `GIT_TIMEOUT_SECONDS` | `QA Agent` / noreply / `120` | Commit identity; git timeout. |
+| `PACKAGE_MANAGER` | `npm` in `.env.example` | `npm` or `pnpm`; must match the test repo's lockfile. |
+| `SKIP_DEPENDENCY_INSTALL` | `true` in `.env.example` | Install once when `node_modules` is missing, then reuse it. |
+| `PLAYWRIGHT_EXTRA_ARGS` | `--reporter=line` (`--project=qa-agent` added in `.env.example`) | Extra arguments for `playwright test`. |
+| `PLAYWRIGHT_TIMEOUT_SECONDS` / `PNPM_INSTALL_TIMEOUT_SECONDS` | `1800` / `600` | Test run and install timeouts. |
+| `PLAYWRIGHT_INSTALL_BROWSERS` | `false` | Install Chromium before every run. |
+| `PAGE_CONTRACT_PATH` | the TripBuilder contract in `.env.example` | Real roles/labels/test IDs of the app under test. |
+| `DASHBOARD_TARGET_URL` | the TripBuilder UAT portal in `.env.example` | Target for runs without `--target-url`. |
+
+**Xray**
+
+| Variable | Default | Description |
+|---|---|---|
+| `XRAY_DIR` | `xray` | Folder in the test repo for each ticket's files (`xray/<TICKET>/`). |
+| `XRAY_PROJECT_KEY` | ticket prefix | Jira project the tests are created in. |
+| `XRAY_TEST_FOLDER` | `AI QA/{ticket_id}` | Xray test-repository folder. |
+| `XRAY_REQUIREMENT_LINK_TYPE` | `Test` | Link type from each test to the story. |
+| `XRAY_INCLUDE_PRIORITY` | `false` | Send priority names; only if your Jira uses Highest…Lowest. |
+| `XRAY_CLIENT_ID` / `XRAY_CLIENT_SECRET` | – | Only for `taf xray export --apply`. |
+| `XRAY_BASE_URL` | `https://xray.cloud.getxray.app` | Xray Cloud API. |
+
+**Skills, service, budget and optional integrations**
+
+| Variable | Default | Description |
+|---|---|---|
 | `SKILLS_ENABLED` / `SKILLS_ON_LOCAL` / `SKILLS_MAX_CHARS` / `SKILLS_DIR` | `true` / `false` / `12000` / `skills` | See [skills/README.md](skills/README.md). |
-| `JIRA_JQL` | see `.env.example` | Which tickets the board shows. |
-| `JIRA_POLL_SECONDS` / `JIRA_TIMEOUT_SECONDS` | `60` / `20` | Jira poll interval and request timeout. |
+| `HOST` / `PORT` | `127.0.0.1` / `8000` | Bind address for `taf serve`. |
+| `QA_DB_PATH` | `qa_runs.db` | SQLite run history. |
+| `LOG_LEVEL` | `INFO` | Python log level. |
+| `MAX_CLOUD_TOKENS_PER_RUN` / `MAX_CLOUD_TOKENS_PER_DAY` | `250000` / `2000000` | Hard Claude token caps (`0` = off). Cache reads don't count. |
+| `PAPERCLIP_API_URL` / `PAPERCLIP_API_KEY` | – | Optional Paperclip. Empty = disabled. |
+| `PAPERCLIP_PROJECT` / `PAPERCLIP_ENFORCE_BUDGET` | – / `true` | Paperclip project; refuse Claude calls while it has paused the agent. |
+| `QA_SERVICE_API_KEY` | – | Only for `POST /qa/runs` (optional n8n integration): required `X-API-Key`. |
+| `CALLBACK_TIMEOUT_SECONDS` | `30` | Timeout for the n8n callback. |
 
-## Running
+---
 
-Start the service (development mode, with auto-reload):
+## Running the service
+
+The scripts start it for you. To start it by hand (development mode, auto-reload):
 
 ```bash
 python -m taf serve --reload
 ```
 
-`uvicorn main:app --host 127.0.0.1 --port 8000 --reload` is equivalent. For a
-long-running process drop `--reload` and keep a **single worker**: runs share one
-test-repo working tree, and the n8n run registry is held in memory.
-
-Check the configuration:
+`uvicorn main:app --host 127.0.0.1 --port 8000 --reload` is equivalent. Keep a
+**single worker**: runs share one test-repo working tree, and the `POST /qa/runs`
+registry is held in memory.
 
 ```bash
 python -m taf doctor
@@ -588,35 +765,28 @@ python -m taf doctor
 curl -s http://localhost:8000/health
 ```
 
-Interactive API docs are at http://localhost:8000/docs.
+`/health` shows the resolved model routes, the ticket source, the test repo and
+mode, and Paperclip status. Interactive API docs are at http://localhost:8000/docs.
 
 ### Dashboard
 
-<http://127.0.0.1:8000/dashboard> is a local board that joins the QA queue to live
-pipeline state. Each row is a ticket with a pipeline strip (triage → architect →
-automation → report → closeout) and buttons that start a single stage; stages are
-cumulative, so `architect` runs triage first. "What the agent did" opens the
-extracted criteria, the test plan and the generated spec for a finished run.
+<http://127.0.0.1:8000/dashboard> joins the ticket queue to live pipeline state:
+- **Rows:** each ticket has a phase strip (triage → architect → automation →
+  report) and buttons that start a stage. Stages are cumulative, so Architect
+  runs triage first.
+- **Detail:** "What the agent did" shows the criteria, the plan, the spec, the
+  Xray files and the log of a run.
+- **Model selector:** switches the provider for new runs.
+- **Queue source:** shown in the chip and banner. "Demo queue (seed)" is expected
+  with `-Source seed`.
+- **History:** kept in SQLite (`QA_DB_PATH`), so the board survives a restart.
 
-The queue comes from Jira when `JIRA_BASE_URL`, `JIRA_EMAIL` and `JIRA_API_TOKEN`
-are all set. Otherwise the board reads [data/seed_tickets.json](data/seed_tickets.json)
-and shows an amber "Jira is not configured" banner — that is the expected state
-for a fresh clone, and the sample ticket in that file is enough to exercise the
-whole pipeline.
-
-Run history and per-phase artifacts are persisted by [taf/runs/store.py](taf/runs/store.py)
-into the SQLite file at `QA_DB_PATH` (`qa_runs.db` by default, created on first
-start and git-ignored), so the board survives a restart.
-
-The dashboard is deliberately **unauthenticated** and the service binds to
-`127.0.0.1`. Putting `QA_SERVICE_API_KEY` into a URL or cookie to protect a page
-you open in a browser would be worse than not protecting it; the `/qa/*` API keeps
-its key. Do not expose this port.
-
-The same thing over HTTP (or use `python -m taf run`, which needs no server):
+The dashboard is deliberately **unauthenticated**, and the service binds to
+`127.0.0.1`: do not expose the port. The same over HTTP (or use `python -m taf
+run`, which needs no server):
 
 ```bash
-curl -s -X POST http://127.0.0.1:8000/dashboard/api/start -H 'Content-Type: application/json' -d '{"ticket_id":"TB-601","stage":"triage","provider":"offline"}'
+curl -s -X POST http://127.0.0.1:8000/dashboard/api/start -H 'Content-Type: application/json' -d '{"ticket_id":"TB-601","stage":"full","source":"seed","provider":"offline"}'
 ```
 
 ```bash
@@ -627,12 +797,26 @@ curl -s http://127.0.0.1:8000/dashboard/api/board
 curl -s -X POST http://127.0.0.1:8000/dashboard/api/provider -H 'Content-Type: application/json' -d '{"provider":"ollama"}'
 ```
 
-`provider` in the start body is optional (default: the service's current provider).
+`provider` and `source` in the start body are optional. On Windows use
+`Invoke-RestMethod`, not `curl`, which is an alias for `Invoke-WebRequest` in
+PowerShell.
 
-On Windows use `Invoke-RestMethod`, not `curl` — see [docs/DEMO.md](docs/DEMO.md), which has
-the PowerShell form of every command here.
+---
 
-## API
+## Optional: n8n integration
+
+**Not used by local runs.** The dashboard, `python -m taf run` and the scripts
+never call n8n. This is an alternative wiring, kept working but inactive:
+1. n8n catches the Jira transition and starts a run over HTTP;
+2. the last agent (Closeout, `taf/agents/closeout/`) posts the verdict back;
+3. n8n updates Jira and imports into Xray.
+
+Use it if you want Jira-triggered runs on a hosted service. Note that it imports
+the model's test cases directly, without the review step above.
+[docs/SETUP.md](docs/SETUP.md) (macOS) and [docs/SETUP-windows.md](docs/SETUP-windows.md)
+walk through that full hosted stack (Ollama, test repo, service, Paperclip, n8n,
+Jira/Xray). [docs/SETUP-ollama-only.md](docs/SETUP-ollama-only.md) is its no-Claude
+variant.
 
 ### `POST /qa/runs` → `202 Accepted`
 
@@ -647,19 +831,19 @@ Headers: `X-API-Key: <QA_SERVICE_API_KEY>`.
   "target_url": "https://staging.example.com",
   "n8n_callback_url": "https://n8n.example.com/webhook/qa-result",
   "azure_logs": "optional",
-  "db_logs": "optional"
+  "db_logs": "optional",
+  "provider": "optional: claude | ollama | auto | offline"
 }
 ```
 
 Response: `{ "run_id": "…", "ticket_id": "SHOP-1234", "status": "queued", "status_url": "/qa/runs/…" }`.
-
-If a run for the same ticket is already in progress, the service returns `409`.
+A second request for a ticket that is already running returns `409`.
 
 ### `GET /qa/runs/{run_id}`
 
 Returns the run's status (`queued`, `running`, `completed` or `crashed`), the outcome, the branch, token usage, errors and the final report.
 
-### Callback to n8n
+### Callback to n8n (Closeout agent)
 
 ```json
 {
@@ -680,9 +864,13 @@ Returns the run's status (`queued`, `running`, `completed` or `crashed`), the ou
 }
 ```
 
-`status` is either `"QA Passed"` or `"QA Failed"`. `xray_tests_json` is ready to send as-is to Xray Cloud's `POST /api/v2/import/test/bulk`. Use `metadata.run_id` as an idempotency key in n8n: the callback is retried on connection errors, 429 and 502–504.
+- `status` is either `"QA Passed"` or `"QA Failed"`.
+- `xray_tests_json` is ready to send as-is to Xray Cloud's
+  `POST /api/v2/import/test/bulk`.
+- Use `metadata.run_id` as an idempotency key in n8n: the callback is retried on
+  connection errors, 429 and 502–504.
 
-## n8n workflow outline
+### n8n workflow outline
 
 1. **Jira Trigger**: fires on an issue transition to *Ready for QA*.
 2. **GitHub node**: fetches the linked PR's diff (`Accept: application/vnd.github.diff`).
@@ -691,14 +879,20 @@ Returns the run's status (`queued`, `running`, `completed` or `crashed`), the ou
 5. **Webhook (callback)**: receives the result, then:
    - transitions the Jira issue according to `status`;
    - adds `report_markdown` as a comment;
-   - imports `xray_tests_json` through Xray Cloud's bulk import API. Each test is created with its steps, filed in a per-ticket folder, and linked to the story;
-   - attaches `xray_csv_content` to the ticket as an audit copy and manual fallback.
+   - imports `xray_tests_json` through Xray Cloud's bulk import API;
+   - attaches `xray_csv_content` to the ticket as an audit copy.
 
-   The CSV uses one row per step and repeats the `Test ID` for later steps. Its columns are: `Test ID, Summary, Test Type, Priority, Labels, Requirement, Preconditions, Action, Data, Expected Result`. Labels are separated by `;`.
+The CSV has one row per step and repeats the `Test ID` on later steps. Its columns
+are `Test ID, Summary, Test Type, Priority, Labels, Requirement, Preconditions,
+Action, Data, Expected Result`; labels are separated by `;`.
+
+---
 
 ## Operational notes
 
-- Re-running a ticket imports a **new** set of Xray tests; it doesn't update the previous set.
-- Run history and per-phase artifacts are persisted to SQLite (`QA_DB_PATH`), so the dashboard survives a restart. The *active* run registry and the daily budget counter still live **in memory** and reset on restart. Keep a single worker; move these to Redis or Postgres if you need more than one.
-- The spec is written as `<TICKET>.spec.ts`. The ticket ID is validated, which prevents path traversal and invalid branch names.
+- Exporting a ticket's test cases twice creates a **second** set in Xray; it doesn't update the first.
+- Run history and per-phase output are persisted to SQLite (`QA_DB_PATH`), so the dashboard survives a restart. The `POST /qa/runs` registry and the daily budget counter live **in memory** and reset on restart. Keep a single worker.
+- One run at a time per test repo: the automation step holds a lock on it. A second run for the same ticket is refused (`409`).
+- The spec is written as `<TICKET>.spec.ts`. The ticket ID is validated, which prevents path traversal and invalid branch names; every write is confined to the test repo.
 - The report header (status, counts, branch, tokens) is built in Python. The local model only formats the log details, so it cannot change the verdict.
+- Secrets (`ANTHROPIC_API_KEY`, `JIRA_API_TOKEN`, `GITHUB_TOKEN`, `XRAY_CLIENT_SECRET`, `PAPERCLIP_API_KEY`) are redacted from logs and subprocess output.
