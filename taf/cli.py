@@ -245,6 +245,7 @@ def cmd_serve(args: argparse.Namespace) -> int:
     import uvicorn
 
     from taf.config import PROJECT_ROOT, SETTINGS
+    print(f"Dashboard: http://{args.host or SETTINGS.host}:{args.port or SETTINGS.port}/dashboard", flush=True)
     uvicorn.run("main:app", host=args.host or SETTINGS.host, port=args.port or SETTINGS.port,
                 reload=args.reload, app_dir=str(PROJECT_ROOT))
     return 0

@@ -91,7 +91,8 @@ async def lifespan(_app: FastAPI):
     if orphaned:
         log.warning("Marked %d run(s) interrupted by the previous shutdown.", orphaned)
     log.info("LLM provider: %s -> %s", ROUTER.default_provider, ROUTER.resolve())
-    log.info("Dashboard at http://%s:%s/dashboard", SETTINGS.host, SETTINGS.port)
+    log.info("Dashboard at /dashboard on this server (http://%s:%s/dashboard unless --port overrides PORT)",
+             SETTINGS.host, SETTINGS.port)
     yield
 
 
