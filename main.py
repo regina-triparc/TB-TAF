@@ -149,6 +149,10 @@ class Settings:
     # "claude" = agents 1-3 on Claude, agent 4 on Ollama. "ollama" = every agent on Ollama
     # (no Anthropic key needed, no cloud cost). See SETUP-ollama-only.md.
     llm_provider: str = field(default_factory=lambda: _env_str("LLM_PROVIDER", "claude").lower())
+    # Agents that use Claude even when LLM_PROVIDER=ollama (comma list of
+    # triage,architect,automation). The hybrid the framework was designed for:
+    # a small local model cannot write runnable Playwright code, but triages well.
+    cloud_agents: str = field(default_factory=lambda: _env_str("CLOUD_AGENTS", ""))
 
     # --- Cloud LLM (Claude) -------------------------------------------------
     anthropic_api_key: str = field(default_factory=lambda: _env_str("ANTHROPIC_API_KEY"))
@@ -185,6 +189,8 @@ class Settings:
     ollama_architect_model: str = field(default_factory=lambda: _env_str("OLLAMA_ARCHITECT_MODEL"))
     ollama_automation_model: str = field(default_factory=lambda: _env_str("OLLAMA_AUTOMATION_MODEL"))
     ollama_max_tokens: int = field(default_factory=lambda: _env_int("OLLAMA_MAX_TOKENS", 4096))
+    # Cap on how many test cases the Test Architect may plan when running locally.
+    ollama_max_test_cases: int = field(default_factory=lambda: _env_int("OLLAMA_MAX_TEST_CASES", 5))
 
     # --- TypeScript test repository ----------------------------------------
     github_token: str = field(default_factory=lambda: _env_str("GITHUB_TOKEN"))
@@ -202,6 +208,19 @@ class Settings:
     playwright_timeout_s: int = field(default_factory=lambda: _env_int("PLAYWRIGHT_TIMEOUT_SECONDS", 1800))
     playwright_install_browsers: bool = field(default_factory=lambda: _env_bool("PLAYWRIGHT_INSTALL_BROWSERS", False))
     playwright_extra_args: str = field(default_factory=lambda: _env_str("PLAYWRIGHT_EXTRA_ARGS", "--reporter=line"))
+    # "pnpm" or "npm". A project with only package-lock.json must not be driven by pnpm.
+    package_manager: str = field(default_factory=lambda: _env_str("PACKAGE_MANAGER", "pnpm").lower())
+    # Skip the install step entirely when node_modules is already present and managed
+    # by a human - the agent should not mutate a working copy's dependency tree.
+    skip_dependency_install: bool = field(default_factory=lambda: _env_bool("SKIP_DEPENDENCY_INSTALL", False))
+    # Write the spec and run it IN PLACE: no fetch, no branch, no commit, no push.
+    # Required when TEST_REPO_LOCAL_PATH is a working copy a person is using, where
+    # switching branches would disturb their uncommitted work.
+    no_git: bool = field(default_factory=lambda: _env_bool("TEST_REPO_NO_GIT", False))
+    # Markdown file of REAL roles/names captured from the app under test. Without it
+    # the automation agent can only guess selectors, which is the single biggest
+    # cause of generated specs that compile, run, and assert nothing real.
+    page_contract_path: str = field(default_factory=lambda: _env_str("PAGE_CONTRACT_PATH"))
 
     # --- Budget / Paperclip Control Room -----------------------------------
     max_cloud_tokens_per_run: int = field(default_factory=lambda: _env_int("MAX_CLOUD_TOKENS_PER_RUN", 250_000))
@@ -385,9 +404,9 @@ if SETTINGS.claude_pricing_json:
         logging.getLogger("qa.config").warning("Ignoring invalid CLAUDE_PRICING_JSON: %s", _exc)
 
 
-def price_cents(model: str, usage: TokenUsage) -> float:
+def price_cents(model: str, usage: TokenUsage, local: bool = False) -> float:
     """Exact (fractional) cost of one call in US cents, pricing each cache tier separately."""
-    if USE_OLLAMA_ONLY:
+    if local:
         return 0.0  # local models are free; don't price them like the dearest Claude model
     prices = MODEL_PRICING.get(model) or MODEL_PRICING.get(re.sub(r"-\d{8}$", "", model))
     if prices is None:
@@ -793,8 +812,9 @@ class TokenBudget:
         if reason:
             raise BudgetExceededError(reason)
 
-    def record(self, run_id: str, ticket_id: str, agent: str, usage: TokenUsage, model: str) -> None:
-        exact_cents = price_cents(model, usage)
+    def record(self, run_id: str, ticket_id: str, agent: str, usage: TokenUsage, model: str,
+               provider: str = "anthropic") -> None:
+        exact_cents = price_cents(model, usage, local=(provider == "ollama"))
         with self._lock:
             self._roll_day()
             self._run_usage[run_id] = self._run_usage.get(run_id, 0) + usage.budget_tokens
@@ -807,7 +827,7 @@ class TokenBudget:
             run_total, day_total = self._run_usage[run_id], self._day_usage
         self._control_room.emit(
             run_id, ticket_id, "llm.usage",
-            agent=agent, provider="ollama" if USE_OLLAMA_ONLY else "anthropic", model=model, billing_type="metered_api",
+            agent=agent, provider=provider, model=model, billing_type="metered_api",
             # Paperclip's ledger: inputTokens = billed-at-full-or-write-rate, cached = cache reads.
             input_tokens=usage.input_tokens - usage.cache_read_tokens,
             cached_input_tokens=usage.cache_read_tokens,
@@ -861,6 +881,7 @@ class AgentRoute:
     effort: str          # output_config.effort: low | medium | high | xhigh | max
     max_tokens: int      # includes adaptive-thinking tokens, so leave headroom
     cache_context: bool  # mark the per-run context block with cache_control
+    provider: str        # "claude" or "ollama" - which client serves this agent
 
 
 def _cache_enabled(key: str) -> bool:
@@ -872,32 +893,40 @@ def _cache_enabled(key: str) -> bool:
 # must run against an application it has only seen through a diff, and repairing it
 # from loader errors. Triage (extraction + risk classification) and test design are
 # reasoning over text, where Sonnet 5.5 is strong at half the price.
-AGENT_ROUTES: Dict[str, AgentRoute] = {
-    "triage": AgentRoute("triage", "Intake Triager", SETTINGS.claude_triage_model,
-                         SETTINGS.claude_triage_effort, SETTINGS.claude_triage_max_tokens, _cache_enabled("triage")),
-    "architect": AgentRoute("architect", "Test Architect", SETTINGS.claude_architect_model,
-                            SETTINGS.claude_architect_effort, SETTINGS.claude_architect_max_tokens,
-                            _cache_enabled("architect")),
-    "automation": AgentRoute("automation", "TS Automation Engineer", SETTINGS.claude_automation_model,
-                             SETTINGS.claude_automation_effort, SETTINGS.claude_automation_max_tokens,
-                             _cache_enabled("automation")),
-}
-if USE_OLLAMA_ONLY:
-    # Same three agents, all on Ollama. Effort and prompt caching are Claude features.
-    _ollama_models = {"triage": SETTINGS.ollama_triage_model, "architect": SETTINGS.ollama_architect_model,
-                      "automation": SETTINGS.ollama_automation_model}
-    AGENT_ROUTES = {
-        key: AgentRoute(key, route.label, _ollama_models[key] or SETTINGS.ollama_model, "n/a",
-                        SETTINGS.ollama_max_tokens, False)
-        for key, route in AGENT_ROUTES.items()
-    }
+def _provider_for(key: str) -> str:
+    """Per-agent provider. CLOUD_AGENTS pins an agent to Claude in an otherwise local run."""
+    pinned = {a.strip().lower() for a in SETTINGS.cloud_agents.split(",") if a.strip()}
+    if key in pinned or "all" in pinned:
+        return "claude"
+    return "ollama" if USE_OLLAMA_ONLY else "claude"
 
+
+def _build_route(key: str, label: str, cloud_model: str, effort: str, cloud_max: int) -> AgentRoute:
+    provider = _provider_for(key)
+    if provider == "claude":
+        return AgentRoute(key, label, cloud_model, effort, cloud_max, _cache_enabled(key), "claude")
+    local_override = {"triage": SETTINGS.ollama_triage_model,
+                      "architect": SETTINGS.ollama_architect_model,
+                      "automation": SETTINGS.ollama_automation_model}[key]
+    # Effort and prompt caching are Claude features; neither applies to Ollama.
+    return AgentRoute(key, label, local_override or SETTINGS.ollama_model, "n/a",
+                      SETTINGS.ollama_max_tokens, False, "ollama")
+
+
+AGENT_ROUTES: Dict[str, AgentRoute] = {
+    "triage": _build_route("triage", "Intake Triager", SETTINGS.claude_triage_model,
+                           SETTINGS.claude_triage_effort, SETTINGS.claude_triage_max_tokens),
+    "architect": _build_route("architect", "Test Architect", SETTINGS.claude_architect_model,
+                              SETTINGS.claude_architect_effort, SETTINGS.claude_architect_max_tokens),
+    "automation": _build_route("automation", "TS Automation Engineer", SETTINGS.claude_automation_model,
+                               SETTINGS.claude_automation_effort, SETTINGS.claude_automation_max_tokens),
+}
 
 _VALID_EFFORTS = {"low", "medium", "high", "xhigh", "max"}
 if SETTINGS.prompt_cache_ttl not in {"5m", "1h"}:
     logging.getLogger("qa.config").warning("PROMPT_CACHE_TTL=%r is not '5m' or '1h' - using 5m.",
                                           SETTINGS.prompt_cache_ttl)
-for _route in ([] if USE_OLLAMA_ONLY else AGENT_ROUTES.values()):
+for _route in [r for r in AGENT_ROUTES.values() if r.provider == 'claude']:
     if _route.effort not in _VALID_EFFORTS:
         logging.getLogger("qa.config").warning(
             "CLAUDE_%s_EFFORT=%r is not one of %s - the API will reject it.",
@@ -912,7 +941,7 @@ for _route in ([] if USE_OLLAMA_ONLY else AGENT_ROUTES.values()):
 def claude_llm(route_key: str) -> Any:
     """One client per agent route. Cloud 'analytical brain' used by agents 1-3 (Ollama if LLM_PROVIDER=ollama)."""
     route = AGENT_ROUTES[route_key]
-    if USE_OLLAMA_ONLY:
+    if route.provider == "ollama":
         return ChatOpenAI(
             model=route.model,
             base_url=SETTINGS.ollama_base_url,
@@ -990,7 +1019,8 @@ def invoke_claude(state: "QAState", route_key: str, messages: List[BaseMessage])
     route = AGENT_ROUTES[route_key]
     BUDGET.ensure_available(state["run_id"])
     response = claude_llm(route_key).invoke(messages)
-    BUDGET.record(state["run_id"], state["ticket_id"], route.label, token_usage(response), route.model)
+    BUDGET.record(state["run_id"], state["ticket_id"], route.label, token_usage(response),
+                  route.model, route.provider)
     _check_stop_reason(route, response)
     return response
 
@@ -1009,7 +1039,8 @@ def call_claude_structured(
     runnable = claude_llm(route_key).with_structured_output(schema, method="json_schema", include_raw=True)
     result = runnable.invoke(messages)
     raw = result.get("raw")
-    BUDGET.record(state["run_id"], state["ticket_id"], route.label, token_usage(raw), route.model)
+    BUDGET.record(state["run_id"], state["ticket_id"], route.label, token_usage(raw),
+                  route.model, route.provider)
     _check_stop_reason(route, raw)
     parsed = result.get("parsed")
     if parsed is None:
@@ -1257,6 +1288,14 @@ class TestRepository:
         if shutil.which("git") is None:
             raise CommandError("git is not installed or not on PATH.")
 
+        if self.settings.no_git:
+            # In-place mode: the directory is someone's working copy. Do not clone,
+            # do not inspect its git state, do not touch its branches.
+            if not self.path.is_dir():
+                raise CommandError(f"TEST_REPO_LOCAL_PATH does not exist: {self.path}")
+            logs.append(f"[info] In-place mode (TEST_REPO_NO_GIT=true): using {self.path} "
+                        f"without any git operations.")
+            return
         if (self.path / ".git").is_dir():
             return
         if self.path.exists() and any(self.path.iterdir()):
@@ -1283,6 +1322,10 @@ class TestRepository:
         a failed checkout raises CommandError because the tree would be in an unknown state.
         """
         assert self.path is not None
+        if self.settings.no_git:
+            logs.append("[info] In-place mode: no branch created; the spec is written "
+                        "onto the current working tree and left uncommitted for review.")
+            return ""
         base = self.settings.test_repo_base_branch
         branch = f"qa/{ticket_id}"
 
@@ -1329,6 +1372,10 @@ class TestRepository:
         Returns True if pushed. Commit failures raise; push failures are tolerated.
         """
         assert self.path is not None
+        if self.settings.no_git:
+            logs.append(f"[info] In-place mode: {spec_path.name} left uncommitted in your "
+                        f"working copy. Nothing was staged, committed or pushed.")
+            return False
         rel_spec = spec_path.relative_to(self.path).as_posix()
         result = self.git("add", "--", rel_spec, check=False)
         logs.append(result.as_log())
@@ -1364,29 +1411,49 @@ class TestRepository:
 
     # ----------------------------------------------------------- pnpm / PW --
     def _pw_env(self, target_url: str) -> Dict[str, str]:
-        return {
+        env = {
             "CI": "1",               # Playwright: no interactive HTML report server, retries per config
             "FORCE_COLOR": "0",
             "NO_COLOR": "1",
-            "BASE_URL": target_url,  # consumed by the generated spec and playwright.config.ts
-            "PLAYWRIGHT_BASE_URL": target_url,
         }
+        # Only set when non-empty: an exported BASE_URL="" defeats a config that does
+        # `process.env.BASE_URL ?? FALLBACK`, because ?? only catches null/undefined.
+        if target_url:
+            env["BASE_URL"] = target_url
+            env["PLAYWRIGHT_BASE_URL"] = target_url
+        return env
+
+    @property
+    def _pm(self) -> str:
+        return "npm" if self.settings.package_manager == "npm" else "pnpm"
+
+    def _exec(self, *args: str) -> List[str]:
+        """`pnpm exec <args>` / `npm exec -- <args>` - the two CLIs differ here."""
+        return [self._pm, "exec", "--", *args] if self._pm == "npm" else [self._pm, "exec", *args]
 
     def install_dependencies(self, target_url: str, logs: List[str]) -> bool:
-        """`pnpm install` (+ optional browser install). Returns False if tests cannot run."""
+        """Install deps (+ optional browsers). Returns False if tests cannot run."""
         assert self.path is not None
-        if shutil.which("pnpm") is None:
-            logs.append("[error] pnpm is not installed or not on PATH (try: corepack enable pnpm).")
+        pm = self._pm
+        if shutil.which(pm) is None:
+            logs.append(f"[error] {pm} is not installed or not on PATH.")
             return False
         env = self._pw_env(target_url)
-        install = run_command(["pnpm", "install"], cwd=self.path, timeout_s=self.settings.pnpm_install_timeout_s, env=env)
+        if self.settings.skip_dependency_install:
+            if not (self.path / "node_modules").is_dir():
+                logs.append("[error] SKIP_DEPENDENCY_INSTALL is set but node_modules is missing.")
+                return False
+            logs.append("[info] Skipping dependency install (SKIP_DEPENDENCY_INSTALL=true); "
+                        "using the existing node_modules.")
+            return True
+        install = run_command([pm, "install"], cwd=self.path, timeout_s=self.settings.pnpm_install_timeout_s, env=env)
         logs.append(install.as_log())
         if not install.ok:
-            logs.append("[error] pnpm install failed - tests were not executed.")
+            logs.append(f"[error] {pm} install failed - tests were not executed.")
             return False
         if self.settings.playwright_install_browsers:
             browsers = run_command(
-                ["pnpm", "exec", "playwright", "install", "--with-deps", "chromium"],
+                self._exec("playwright", "install", "--with-deps", "chromium"),
                 cwd=self.path, timeout_s=self.settings.pnpm_install_timeout_s, env=env,
             )
             logs.append(browsers.as_log())
@@ -1401,7 +1468,7 @@ class TestRepository:
         assert self.path is not None
         rel_spec = spec_path.relative_to(self.path).as_posix()
         return run_command(
-            ["pnpm", "exec", "playwright", "test", rel_spec, "--list"],
+            self._exec("playwright", "test", rel_spec, "--list"),
             cwd=self.path, timeout_s=120, env=self._pw_env(target_url),
         )
 
@@ -1411,7 +1478,7 @@ class TestRepository:
         rel_spec = spec_path.relative_to(self.path).as_posix()
         extra = self.settings.playwright_extra_args.split() if self.settings.playwright_extra_args else []
         test = run_command(
-            ["pnpm", "exec", "playwright", "test", rel_spec, *extra],
+            self._exec("playwright", "test", rel_spec, *extra),
             cwd=self.path, timeout_s=self.settings.playwright_timeout_s, env=self._pw_env(target_url),
         )
         logs.append(test.as_log())
@@ -1569,9 +1636,13 @@ def agent_node(name: str, engine: str, abort_on_error: bool) -> Callable:
         instead of crashing the graph.
     """
 
-    # In Ollama-only mode the cloud agents run locally, so don't label them "claude".
-    if USE_OLLAMA_ONLY:
-        engine = engine.replace("claude", "ollama")
+    # Label the engine from the agent's actual provider, so a hybrid run is honest
+    # about which agent ran where.
+    _by_label = {"Intake Triager": "triage", "Test Architect": "architect",
+                 "TS Automation Engineer": "automation"}
+    _key = _by_label.get(name)
+    if _key:
+        engine = engine.replace("claude", AGENT_ROUTES[_key].provider)
 
     def decorator(fn: Callable[[QAState], Dict[str, Any]]) -> Callable[[QAState], Dict[str, Any]]:
         @functools.wraps(fn)
@@ -1670,6 +1741,18 @@ Rules:
 - Use sequential IDs TC-001, TC-002, ...
 - Prefer 6-20 high-value cases over exhaustive permutations. Order by priority."""
 
+# A small local model generates every token of the plan under a JSON-schema grammar,
+# so plan length is the dominant cost: a 20-case plan is thousands of constrained
+# tokens and does not finish inside any sane timeout on CPU. Cap it, and keep the
+# steps terse. Cloud models are fast enough not to need this.
+LOCAL_ARCHITECT_LIMIT = """
+
+LOCAL MODEL CONSTRAINTS - these override the preferences above:
+- Produce AT MOST {max_cases} test cases. Choose the highest-risk ones; do not enumerate.
+- At most 4 steps per test case. One short sentence per action and per expected result.
+- Keep `strategy` to two sentences. Keep `in_scope` and `out_of_scope` to 3 items each.
+- Omit a test rather than padding the plan."""
+
 
 @agent_node("Test Architect", engine="claude", abort_on_error=True)
 def test_architect(state: QAState) -> Dict[str, Any]:
@@ -1688,9 +1771,12 @@ Target URL: {state.get('target_url', '')}
 ```diff
 {truncate_middle(state.get('github_diff', ''), SETTINGS.max_diff_chars // 3)}
 ```"""
+    system = ARCHITECT_SYSTEM_PROMPT
+    if AGENT_ROUTES["architect"].provider == "ollama":
+        system += LOCAL_ARCHITECT_LIMIT.format(max_cases=SETTINGS.ollama_max_test_cases)
     plan = call_claude_structured(
         state, "architect",
-        [SystemMessage(content=ARCHITECT_SYSTEM_PROMPT), context_message("architect", prompt)],
+        [SystemMessage(content=system), context_message("architect", prompt)],
         TestPlan,
     )
     assert isinstance(plan, TestPlan)
@@ -1755,6 +1841,31 @@ def _parse_spec(answer: AIMessage) -> Tuple[Optional[str], Optional[str]]:
         return None, str(exc)
 
 
+def _page_contract_block() -> str:
+    """
+    Real roles and accessible names from the running app, appended to the automation
+    prompt. A model that has never seen the page invents selectors that compile and
+    then match nothing; this is the ground truth that stops it.
+    """
+    path = SETTINGS.page_contract_path
+    if not path:
+        return ""
+    try:
+        text = Path(path).expanduser().read_text(encoding="utf8")
+    except OSError as exc:
+        logging.getLogger("qa.automation").warning("PAGE_CONTRACT_PATH unreadable (%s)", exc)
+        return ""
+    header = (
+        """
+
+## Page contract - REAL selectors from the live app
+These are authoritative. Use these roles and names verbatim; do not invent others.
+
+"""
+    )
+    return header + truncate_middle(text, 8000)
+
+
 @agent_node("TS Automation Engineer", engine="claude+local-cli", abort_on_error=True)
 def automation_engineer(state: QAState) -> Dict[str, Any]:
     ticket_id, run_id = state["ticket_id"], state["run_id"]
@@ -1788,7 +1899,7 @@ Target URL: {target_url}
 ## Diff (for selectors, routes and copy text)
 ```diff
 {truncate_middle(state.get('github_diff', ''), SETTINGS.max_diff_chars // 2)}
-```"""
+```{_page_contract_block()}"""
     messages: List[BaseMessage] = [SystemMessage(content=AUTOMATION_SYSTEM_PROMPT),
                                    context_message("automation", prompt)]
     answer = invoke_claude(state, "automation", messages)
@@ -2161,6 +2272,14 @@ async def lifespan(_app: FastAPI):
                 log.warning("Paperclip: %s", warning)
     else:
         log.info("Paperclip not configured (PAPERCLIP_API_URL / PAPERCLIP_API_KEY) - events go to the log only.")
+
+    # Runs still marked 'running' belong to a process that no longer exists.
+    import run_store
+    orphaned = run_store.get_store().mark_stale_running_as_interrupted()
+    if orphaned:
+        log.warning("Marked %d run(s) interrupted by the previous shutdown.", orphaned)
+    log.info("Dashboard at http://%s:%s/dashboard",
+             os.getenv("HOST", "127.0.0.1"), _env_int("PORT", 8000))
     yield
 
 
@@ -2171,6 +2290,12 @@ app = FastAPI(
     description="Jira → LangGraph agents (Claude + local Qwen) → Playwright → n8n / Xray.",
 )
 
+# Imported after `app` exists: dashboard.py imports main lazily inside its handlers,
+# so mounting here is the only coupling between them.
+import dashboard  # noqa: E402
+
+app.include_router(dashboard.router)
+
 
 @app.get("/health")
 def health() -> Dict[str, Any]:
@@ -2180,7 +2305,8 @@ def health() -> Dict[str, Any]:
         "status": "ok",
         "time": utc_now(),
         "claude_routes": {
-            key: {"model": r.model, "effort": r.effort, "max_tokens": r.max_tokens, "prompt_cache": r.cache_context}
+            key: {"provider": r.provider, "model": r.model, "effort": r.effort,
+                  "max_tokens": r.max_tokens, "prompt_cache": r.cache_context}
             for key, r in AGENT_ROUTES.items()
         },
         "prompt_cache_ttl": SETTINGS.prompt_cache_ttl,
@@ -2194,7 +2320,10 @@ def health() -> Dict[str, Any]:
             "push_enabled": SETTINGS.git_push_enabled,
             "github_token_configured": bool(SETTINGS.github_token),
         },
-        "tools": {name: bool(shutil.which(name)) for name in ("git", "pnpm")},
+        "tools": {name: bool(shutil.which(name)) for name in ("git", "pnpm", "npm")},
+        "test_repo_mode": {"no_git": SETTINGS.no_git,
+                           "package_manager": SETTINGS.package_manager,
+                           "skip_install": SETTINGS.skip_dependency_install},
         "paperclip": CONTROL_ROOM.health(),
         "budget": {"per_run": SETTINGS.max_cloud_tokens_per_run, "per_day": SETTINGS.max_cloud_tokens_per_day},
     }

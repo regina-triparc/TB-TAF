@@ -1,0 +1,431 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>QA Pipeline Board</title>
+<style>
+  :root {
+    color-scheme: light;
+    --plane:        #f9f9f7;
+    --surface:      #fcfcfb;
+    --border:       #e3e2dd;
+    --border-soft:  #eeedea;
+    --text:         #0b0b0b;
+    --text-2:       #52514e;
+    --text-mute:    #86857f;
+    --good:         #0ca30c;
+    --warning:      #fab219;
+    --serious:      #ec835a;
+    --critical:     #d03b3b;
+    --accent:       #2a78d6;
+    --accent-soft:  #eaf1fb;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:where(:not([data-theme="light"])) {
+      color-scheme: dark;
+      --plane:       #0d0d0d;
+      --surface:     #1a1a19;
+      --border:      #34332f;
+      --border-soft: #262521;
+      --text:        #ffffff;
+      --text-2:      #c3c2b7;
+      --text-mute:   #8e8d84;
+      --accent:      #3987e5;
+      --accent-soft: #15243a;
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --plane:       #0d0d0d;
+    --surface:     #1a1a19;
+    --border:      #34332f;
+    --border-soft: #262521;
+    --text:        #ffffff;
+    --text-2:      #c3c2b7;
+    --text-mute:   #8e8d84;
+    --accent:      #3987e5;
+    --accent-soft: #15243a;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--plane); color: var(--text);
+    font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  .wrap { max-width: 1240px; margin: 0 auto; padding: 24px 16px 64px; }
+
+  header { display: flex; flex-wrap: wrap; gap: 12px; align-items: baseline; margin-bottom: 4px; }
+  h1 { font-size: 20px; margin: 0; letter-spacing: -0.01em; }
+  .sub { color: var(--text-2); font-size: 13px; margin: 0 0 20px; }
+  .chip {
+    display: inline-flex; align-items: center; gap: 6px; padding: 2px 9px;
+    border: 1px solid var(--border); border-radius: 999px; background: var(--surface);
+    font-size: 12px; color: var(--text-2); white-space: nowrap;
+  }
+  .dot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-bottom: 18px; }
+  .tile { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; }
+  .tile .n { font-size: 26px; font-weight: 600; letter-spacing: -0.02em; }
+  .tile .l { font-size: 12px; color: var(--text-2); }
+
+  .banner {
+    border: 1px solid var(--border); border-left: 3px solid var(--warning);
+    background: var(--surface); border-radius: 8px; padding: 10px 14px;
+    margin-bottom: 16px; font-size: 13px; color: var(--text-2);
+  }
+  .banner code { background: var(--border-soft); padding: 1px 5px; border-radius: 4px; color: var(--text); }
+
+  table { width: 100%; border-collapse: collapse; background: var(--surface);
+          border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+  th { text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: .05em;
+       color: var(--text-mute); font-weight: 600; padding: 10px 12px; border-bottom: 1px solid var(--border); }
+  td { padding: 12px; border-bottom: 1px solid var(--border-soft); vertical-align: top; }
+  tr:last-child td { border-bottom: none; }
+  .key { font-family: ui-monospace, "Cascadia Code", Consolas, monospace; font-weight: 600; }
+  .key a { color: var(--accent); text-decoration: none; }
+  .key a:hover { text-decoration: underline; }
+  .summary { color: var(--text); max-width: 420px; }
+  .meta { color: var(--text-mute); font-size: 12px; margin-top: 3px; }
+
+  .phases { display: flex; flex-wrap: wrap; gap: 4px; }
+  .ph {
+    display: inline-flex; align-items: center; gap: 4px; font-size: 11px;
+    padding: 2px 7px; border-radius: 6px; border: 1px solid var(--border);
+    color: var(--text-2); background: var(--surface);
+  }
+  .ph.ok       { border-color: var(--good);     color: var(--good); }
+  .ph.running  { border-color: var(--warning);  color: var(--text); background: var(--accent-soft); }
+  .ph.failed   { border-color: var(--critical); color: var(--critical); }
+  .ph.cancelled{ border-color: var(--border);   color: var(--text-mute); }
+  .ph .ic { font-weight: 700; }
+
+  .controls { display: flex; flex-wrap: wrap; gap: 5px; }
+  button {
+    font: inherit; font-size: 12px; padding: 4px 10px; cursor: pointer;
+    background: var(--surface); color: var(--text);
+    border: 1px solid var(--border); border-radius: 6px;
+  }
+  button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.primary:hover:not(:disabled) { color: #fff; filter: brightness(1.08); }
+  button.danger { border-color: var(--critical); color: var(--critical); }
+
+  .detail { font-size: 12px; color: var(--text-mute); margin-top: 6px; }
+  .err { color: var(--critical); }
+  .empty { padding: 40px 16px; text-align: center; color: var(--text-mute); }
+  .expander { cursor: pointer; user-select: none; color: var(--accent); font-size: 12px;
+               background: none; border: none; padding: 2px 0; }
+  .panel { background: var(--plane); border-top: 1px solid var(--border); }
+  .panel td { padding: 16px 18px; }
+  .sec { margin-bottom: 18px; }
+  .sec:last-child { margin-bottom: 0; }
+  .sec h3 { margin: 0 0 8px; font-size: 12px; text-transform: uppercase;
+            letter-spacing: .05em; color: var(--text-mute); font-weight: 600; }
+  .sec ul { margin: 0; padding-left: 18px; }
+  .sec li { margin-bottom: 3px; }
+  .kv { color: var(--text-2); font-size: 13px; margin-bottom: 6px; }
+  .cases { width: 100%; border-collapse: collapse; font-size: 13px;
+           border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+  .cases th { font-size: 10px; padding: 6px 8px; background: var(--surface); }
+  .cases td { padding: 6px 8px; border-bottom: 1px solid var(--border-soft); vertical-align: top; }
+  .cases tr:last-child td { border-bottom: none; }
+  .tag { display: inline-block; font-size: 10px; padding: 1px 6px; border-radius: 4px;
+         border: 1px solid var(--border); color: var(--text-2); }
+  .tag.auto { border-color: var(--good); color: var(--good); }
+  pre { margin: 0; padding: 10px 12px; background: var(--surface); color: var(--text);
+        border: 1px solid var(--border); border-radius: 6px; overflow-x: auto;
+        font: 12px/1.45 ui-monospace, "Cascadia Code", Consolas, monospace; max-height: 420px; }
+  .steps { color: var(--text-mute); font-size: 12px; margin-top: 3px; }
+  .toast {
+    position: fixed; right: 16px; bottom: 16px; max-width: 420px;
+    background: var(--surface); border: 1px solid var(--border);
+    border-left: 3px solid var(--accent); border-radius: 8px;
+    padding: 10px 14px; font-size: 13px; box-shadow: 0 6px 24px rgba(0,0,0,.14);
+  }
+  .toast.bad { border-left-color: var(--critical); }
+  @media (max-width: 760px) {
+    .hide-sm { display: none; }
+    .summary { max-width: none; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>QA Pipeline Board</h1>
+    <span class="chip" id="engine">&hellip;</span>
+    <span class="chip" id="jira">&hellip;</span>
+    <span style="flex:1"></span>
+    <button id="theme" title="Toggle theme">Theme</button>
+    <button id="refresh">Refresh</button>
+  </header>
+  <p class="sub">Tickets in <strong>Ready for QA</strong> and <strong>IN QA</strong>, with the pipeline stage each is in. Runs execute on the local model.</p>
+
+  <div id="banner"></div>
+
+  <div class="tiles">
+    <div class="tile"><div class="n" id="t-ready">&ndash;</div><div class="l">Ready for QA</div></div>
+    <div class="tile"><div class="n" id="t-inqa">&ndash;</div><div class="l">In QA</div></div>
+    <div class="tile"><div class="n" id="t-running">&ndash;</div><div class="l">Running now</div></div>
+    <div class="tile"><div class="n" id="t-failed">&ndash;</div><div class="l">Failed runs</div></div>
+  </div>
+
+  <table>
+    <thead>
+      <tr>
+        <th style="width:96px">Ticket</th>
+        <th>Summary</th>
+        <th class="hide-sm" style="width:92px">Status</th>
+        <th style="width:300px">Pipeline</th>
+        <th style="width:270px">Start a stage</th>
+      </tr>
+    </thead>
+    <tbody id="rows">
+      <tr><td colspan="5" class="empty">Loading&hellip;</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<script>
+const PHASES = ["triage", "architect", "automation", "report"];
+const ICON = { ok: "✓", running: "●", failed: "✕", cancelled: "–", pending: "·" };
+const STAGES = [["triage","Triage"], ["architect","Architect"], ["automation","Automation"], ["full","Full run"]];
+let busy = new Set();
+let openRun = null;          // run_id whose panel is expanded
+let openDetail = null;       // its fetched detail
+
+function esc(s) {
+  return String(s ?? "").replace(/[&<>"']/g, c =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+function toast(msg, bad) {
+  const el = document.createElement("div");
+  el.className = "toast" + (bad ? " bad" : "");
+  el.textContent = msg;
+  document.body.appendChild(el);
+  setTimeout(() => el.remove(), 6000);
+}
+
+function phaseStrip(run) {
+  const byName = {};
+  (run?.phases || []).forEach(p => { byName[p.phase] = p; });
+  return PHASES.map(name => {
+    const p = byName[name];
+    const state = p ? p.state : "pending";
+    const title = p?.detail ? `${name}: ${p.detail}` : name;
+    return `<span class="ph ${state}" title="${esc(title)}">
+              <span class="ic" aria-hidden="true">${ICON[state]}</span>${esc(name)}
+            </span>`;
+  }).join("");
+}
+
+function runLine(run) {
+  if (!run) return '<div class="detail">no run yet</div>';
+  const done = (run.phases || []).filter(p => p.detail && p.state === "ok").pop();
+  if (run.state === "running") {
+    const cur = (run.phases || []).find(p => p.state === "running");
+    return `<div class="detail">running${cur ? " &middot; " + esc(cur.phase) : ""}</div>`;
+  }
+  if (run.state === "failed")
+    return `<div class="detail err">failed &middot; ${esc(run.error || "see logs")}</div>`;
+  if (run.state === "cancelled")
+    return `<div class="detail">cancelled</div>`;
+  return `<div class="detail">${esc(done?.detail || run.outcome || "completed")}</div>`;
+}
+
+
+function section(title, inner) {
+  return `<div class="sec"><h3>${esc(title)}</h3>${inner}</div>`;
+}
+function list(items) {
+  if (!items || !items.length) return '<div class="kv">none</div>';
+  return `<ul>${items.map(i => `<li>${esc(i)}</li>`).join("")}</ul>`;
+}
+
+function renderTriage(a) {
+  return section("Triage - what it understood",
+    `<div class="kv"><strong>Risk:</strong> ${esc(a.risk_level || "?")} &nbsp;
+      <strong>Feature:</strong> ${esc(a.feature_summary || "")}</div>`) +
+    section(`Acceptance criteria it extracted (${(a.acceptance_criteria || []).length})`, list(a.acceptance_criteria)) +
+    section(`Risks it identified (${(a.risks || []).length})`, list(a.risks)) +
+    section("Impacted areas", list(a.impacted_areas)) +
+    section("Gaps and questions for the team", list(a.gaps_and_questions));
+}
+
+function renderArchitect(a) {
+  const rows = (a.cases || []).map(c => `
+    <tr>
+      <td><strong>${esc(c.test_id)}</strong></td>
+      <td>${esc(c.summary)}
+        <div class="steps">${(c.steps || []).map(s =>
+          `&bull; ${esc(s.action)} &rarr; ${esc(s.expected_result)}`).join("<br>")}</div></td>
+      <td>${esc(c.priority)}</td>
+      <td>${esc(c.category || c.kind || "")}</td>
+      <td>${c.automatable ? '<span class="tag auto">auto</span>' : '<span class="tag">manual</span>'}</td>
+    </tr>`).join("");
+  return section(`Test plan - ${a.total} cases, ${a.automatable} automatable`,
+    `<table class="cases"><thead><tr><th>ID</th><th>Test</th><th>Priority</th><th>Category</th><th>Mode</th></tr></thead>
+     <tbody>${rows}</tbody></table>`);
+}
+
+function renderAutomation(a) {
+  const head = `<div class="kv">
+      <strong>Branch:</strong> ${esc(a.git_branch || "-")} &nbsp;
+      <strong>Pushed:</strong> ${a.git_pushed ? "yes" : "no"} &nbsp;
+      <strong>Tests:</strong> ${a.execution_passed ? "passed" : "did not pass"}<br>
+      <strong>Spec:</strong> ${esc(a.spec_file_path || "-")}</div>`;
+  return section("Automation - what it built", head) +
+    (a.code ? section("Generated spec", `<pre>${esc(a.code)}</pre>`) : "") +
+    (a.log_tail ? section("Playwright output (tail)", `<pre>${esc(a.log_tail)}</pre>`) : "");
+}
+
+function renderPanel(detail) {
+  if (!detail) return '<div class="kv">Loading&hellip;</div>';
+  const blocks = (detail.phases || []).map(p => {
+    const a = p.artifact;
+    if (!a) return "";
+    if (p.phase === "triage") return renderTriage(a);
+    if (p.phase === "architect") return renderArchitect(a);
+    if (p.phase === "automation") return renderAutomation(a);
+    if (p.phase === "report" && a.report_markdown)
+      return section("Report", `<pre>${esc(a.report_markdown)}</pre>`);
+    return "";
+  }).filter(Boolean).join("");
+  return blocks || '<div class="kv">This run recorded no artifacts (it predates artifact capture, or stopped early).</div>';
+}
+
+async function loadDetail(runId) {
+  try {
+    const res = await fetch("/dashboard/api/run/" + runId, { cache: "no-store" });
+    openDetail = res.ok ? await res.json() : null;
+  } catch (e) { openDetail = null; }
+  load();
+}
+
+function render(data) {
+  document.getElementById("engine").innerHTML =
+    `<span class="dot" style="background:var(--good)"></span>${esc(data.provider)} &middot; ${esc(data.model)}`;
+
+  const jiraChip = document.getElementById("jira");
+  jiraChip.innerHTML = data.jira_configured
+    ? `<span class="dot" style="background:${data.jira_reason ? "var(--critical)" : "var(--good)"}"></span>Jira ${data.jira_reason ? "error" : "connected"}`
+    : `<span class="dot" style="background:var(--warning)"></span>Jira not configured`;
+
+  document.getElementById("banner").innerHTML =
+    (!data.jira_configured || data.jira_reason)
+      ? `<div class="banner"><strong>Queue unavailable.</strong> ${esc(data.jira_reason || "")}
+         Add <code>JIRA_BASE_URL</code>, <code>JIRA_EMAIL</code> and <code>JIRA_API_TOKEN</code> to
+         <code>.env</code> and restart the service. Runs already recorded are still listed below.</div>`
+      : "";
+
+  const rows = data.rows || [];
+  const n = s => rows.filter(r => (r.jira.status || "").toLowerCase() === s).length;
+  document.getElementById("t-ready").textContent = n("ready for qa");
+  document.getElementById("t-inqa").textContent = n("in qa");
+  document.getElementById("t-running").textContent = rows.filter(r => r.run?.state === "running").length;
+  document.getElementById("t-failed").textContent = rows.filter(r => r.run?.state === "failed").length;
+
+  const tbody = document.getElementById("rows");
+  if (!rows.length) {
+    tbody.innerHTML = `<tr><td colspan="5" class="empty">No tickets in Ready for QA or IN QA.</td></tr>`;
+    return;
+  }
+
+  tbody.innerHTML = rows.map(r => {
+    const t = r.jira, run = r.run;
+    const running = run?.state === "running";
+    const disabled = running || busy.has(t.key) ? "disabled" : "";
+    const buttons = STAGES.map(([id, label]) =>
+      `<button ${disabled} data-ticket="${esc(t.key)}" data-stage="${id}"
+         ${id === "full" ? 'class="primary"' : ""}>${label}</button>`).join("");
+    const cancel = running
+      ? `<button class="danger" data-cancel="${esc(run.run_id)}">Cancel</button>` : "";
+    const expanded = run && openRun === run.run_id;
+    const expander = run
+      ? `<button class="expander" data-expand="${esc(run.run_id)}">${expanded ? "▾ hide" : "▸ what the agent did"}</button>`
+      : "";
+    const panel = expanded
+      ? `<tr class="panel"><td colspan="5">${renderPanel(openDetail)}</td></tr>` : "";
+    return `<tr>
+      <td class="key">${t.url ? `<a href="${esc(t.url)}" target="_blank" rel="noopener">${esc(t.key)}</a>` : esc(t.key)}</td>
+      <td><div class="summary">${esc(t.summary)}</div>
+          <div class="meta">${esc(t.type)}${t.priority ? " &middot; " + esc(t.priority) : ""}${t.assignee ? " &middot; " + esc(t.assignee) : ""}</div></td>
+      <td class="hide-sm">${esc(t.status)}</td>
+      <td><div class="phases">${phaseStrip(run)}</div>${runLine(run)}${expander}</td>
+      <td><div class="controls">${buttons}${cancel}</div></td>
+    </tr>${panel}`;
+  }).join("");
+}
+
+async function load() {
+  try {
+    const res = await fetch("/dashboard/api/board", { cache: "no-store" });
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    render(await res.json());
+  } catch (e) {
+    document.getElementById("rows").innerHTML =
+      `<tr><td colspan="5" class="empty">Cannot reach the QA service &mdash; ${esc(e.message)}</td></tr>`;
+  }
+}
+
+document.addEventListener("click", async (ev) => {
+  const exp = ev.target.closest("button[data-expand]");
+  if (exp) {
+    const id = exp.dataset.expand;
+    if (openRun === id) { openRun = null; openDetail = null; load(); }
+    else { openRun = id; openDetail = null; load(); loadDetail(id); }
+    return;
+  }
+  const start = ev.target.closest("button[data-stage]");
+  const stop = ev.target.closest("button[data-cancel]");
+
+  if (start) {
+    const ticket = start.dataset.ticket, stage = start.dataset.stage;
+    busy.add(ticket);
+    start.disabled = true;
+    try {
+      const res = await fetch("/dashboard/api/start", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ticket_id: ticket, stage })
+      });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.detail || ("HTTP " + res.status));
+      toast(`${ticket}: ${stage} started`);
+    } catch (e) {
+      toast(`${ticket}: ${e.message}`, true);
+    } finally {
+      busy.delete(ticket);
+      load();
+    }
+  }
+
+  if (stop) {
+    try {
+      const res = await fetch("/dashboard/api/cancel/" + stop.dataset.cancel, { method: "POST" });
+      const body = await res.json();
+      toast(res.ok ? body.note : (body.detail || "cancel failed"), !res.ok);
+    } catch (e) { toast(e.message, true); }
+    load();
+  }
+});
+
+document.getElementById("refresh").addEventListener("click", load);
+document.getElementById("theme").addEventListener("click", () => {
+  const dark = document.documentElement.getAttribute("data-theme") === "dark";
+  document.documentElement.setAttribute("data-theme", dark ? "light" : "dark");
+  try { localStorage.setItem("qa-theme", dark ? "light" : "dark"); } catch (e) { /* private mode */ }
+});
+try {
+  const saved = localStorage.getItem("qa-theme");
+  if (saved) document.documentElement.setAttribute("data-theme", saved);
+} catch (e) { /* private mode */ }
+
+load();
+setInterval(load, 3000);
+</script>
+</body>
+</html>

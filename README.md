@@ -14,6 +14,38 @@ Jira ──"Ready for QA"──▶ n8n ──POST /qa/runs──▶ QA service �
                                                      └──REST──▶ Paperclip (issue per run, live comments, cost ledger, budget stop)
 ```
 
+## Quick start
+
+The shortest path from a fresh clone to a working board. Full detail is in the
+sections below; Windows users should follow [SETUP-windows.md](SETUP-windows.md),
+and [DEMO.md](DEMO.md) is a step-by-step runbook of the demo this project is
+normally shown with.
+
+```bash
+python3.12 -m venv .venv && source .venv/bin/activate   # Windows: .\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+cp .env.example .env
+```
+
+Then set **three** things in `.env` and leave everything else at its default:
+
+| What | Why |
+|---|---|
+| `LLM_PROVIDER=ollama` (plus `ollama serve` and `ollama pull qwen2.5-coder:7b`) | runs with no Anthropic key and no cloud cost. Use `claude` + `ANTHROPIC_API_KEY` instead if you have one. |
+| `TEST_REPO_LOCAL_PATH` | absolute path, **on your own machine**, to a Playwright project the agent writes specs into. There is no shared value for this — see [TypeScript test repository](#typescript-test-repository-playwright). |
+| `TEST_SPEC_DIR` | folder inside that project where `<TICKET>.spec.ts` is written (`e2e/qa` or `tests/qa`). It must exist and be picked up by `playwright.config.ts`. |
+
+Nothing else is required. `TEST_REPO_URL`, `GITHUB_TOKEN`, Jira, Paperclip and
+Xray are all optional and the service starts without them.
+
+```bash
+uvicorn main:app --host 127.0.0.1 --port 8000
+```
+
+Open <http://127.0.0.1:8000/dashboard>. With no Jira credentials the board reads
+`dashboard_seed.json`, which already contains a sample ticket, so you can click
+through a run immediately. `GET /health` shows which provider each agent resolved to.
+
 ## Architecture
 
 ### Hybrid LLM routing
@@ -104,9 +136,11 @@ When a call is refused, the run skips the remaining cloud steps and still sends 
 |---|---|---|
 | Python | **3.11+** (LangGraph 1.x does not support 3.9) | `brew install python@3.12` |
 | Node.js | 20+ | `brew install node` or nvm |
-| pnpm | 9+ | `corepack enable pnpm` |
+| npm or pnpm | ships with Node / `corepack enable pnpm` | Must match the lockfile in your test project (`PACKAGE_MANAGER`). |
 | git | 2.31+ (needs `GIT_CONFIG_COUNT` support) | `brew install git` |
-| Ollama | latest | `brew install ollama` |
+| Ollama | latest | `brew install ollama` — required for `LLM_PROVIDER=ollama`, and for the report step in either mode. |
+
+On Windows, follow [SETUP-windows.md](SETUP-windows.md) for the equivalents.
 
 ## Installation
 
@@ -154,13 +188,51 @@ curl http://localhost:11434/v1/models
 
 If Ollama is unreachable, the Report Synthesizer falls back to a deterministic report. The run still completes.
 
-### TypeScript test repository (pnpm + Playwright)
+### TypeScript test repository (Playwright)
 
-The service needs a **dedicated clone** of your Playwright repository. Don't use the clone you work in: the agent checks out branches in it. If `TEST_REPO_LOCAL_PATH` doesn't exist, the service clones it on the first run.
+The agent does not create a Playwright project for you. It writes
+`<TICKET>.spec.ts` into one that already exists and then runs it. Point
+`TEST_REPO_LOCAL_PATH` at that project. **This is a path on your own machine —
+it is not a value anyone can send you**, and it is the one setting every new
+install has to fill in.
 
-The test repo should have:
+There are two modes. Pick one.
 
-- `@playwright/test` in `devDependencies` and a committed `pnpm-lock.yaml`.
+**Mode A — in place (`TEST_REPO_NO_GIT=true`).** The recommended mode, and how
+this project is normally run. Point `TEST_REPO_LOCAL_PATH` at a Playwright
+working copy you already have checked out. The agent performs **no git
+operations at all**: no fetch, no checkout, no branch, no commit, no push. It
+writes the spec file and runs Playwright, so the branch you are on and any
+uncommitted work are never touched. `TEST_REPO_URL` and `GITHUB_TOKEN` stay
+empty — they are not read in this mode.
+
+```ini
+TEST_REPO_LOCAL_PATH=C:/code/TripArc.TripBuilder/apps/search-e2e
+TEST_REPO_NO_GIT=true
+TEST_SPEC_DIR=e2e/qa
+GIT_PUSH_ENABLED=false
+PACKAGE_MANAGER=npm
+SKIP_DEPENDENCY_INSTALL=true
+PLAYWRIGHT_EXTRA_ARGS=--reporter=line --project=qa-agent
+```
+
+**Mode B — managed clone (`TEST_REPO_NO_GIT=false`).** Give `TEST_REPO_URL` and
+`GITHUB_TOKEN`; the agent clones into `TEST_REPO_LOCAL_PATH` if it is missing,
+branches from `TEST_REPO_BASE_BRANCH`, commits, and pushes when
+`GIT_PUSH_ENABLED=true`. `TEST_REPO_LOCAL_PATH` must then be a **dedicated**
+directory the agent owns — never a clone you work in, because it checks out
+branches there.
+
+Either way, the test project needs:
+
+- `@playwright/test` in `devDependencies` and a committed lockfile. Set
+  `PACKAGE_MANAGER` to match that lockfile: a project with only
+  `package-lock.json` must be driven by `npm`, not `pnpm`, or the dependency tree
+  is re-resolved. Set `SKIP_DEPENDENCY_INSTALL=true` when `node_modules` is
+  already installed and human-managed.
+- The directory named by `TEST_SPEC_DIR` (relative to the project root) must
+  exist and be covered by `testDir`/`testMatch` in `playwright.config.ts`, or
+  Playwright reports `0 tests`.
 - A `playwright.config.ts` that reads the base URL from the environment:
   ```ts
   import { defineConfig } from '@playwright/test';
@@ -170,18 +242,35 @@ The test repo should have:
     retries: process.env.CI ? 1 : 0,
   });
   ```
-- Browsers installed once on the machine. Alternatively, set `PLAYWRIGHT_INSTALL_BROWSERS=true` to install them on every run.
+- Browsers installed once on the machine, or `PLAYWRIGHT_INSTALL_BROWSERS=true`
+  to install them on every run.
   ```bash
-  pnpm exec playwright install chromium
+  npx playwright install chromium
   ```
+- If the project uses a dedicated Playwright project (for example `qa-agent`) or
+  a signed-in `storageState`, put the selecting flags in `PLAYWRIGHT_EXTRA_ARGS`
+  and make sure the auth setup has been run at least once.
 
-The `GITHUB_TOKEN` should be a fine-grained PAT scoped only to the test repo with **Contents: Read and write**. The service injects it per command as an HTTP auth header through git's environment config, so it never appears in the remote URL, in `.git/config`, in the process list or in logs.
+In Mode B, `GITHUB_TOKEN` should be a fine-grained PAT scoped only to the test
+repo with **Contents: Read and write**. The service injects it per command as an
+HTTP auth header through git's environment config, so it never appears in the
+remote URL, in `.git/config`, in the process list or in logs.
+
+### Page contract (optional but recommended)
+
+`PAGE_CONTRACT_PATH` points at a Markdown file listing the real roles, labels and
+test IDs of the application under test. Without it the Automation Engineer
+invents selectors that do not exist and the generated spec fails on its first
+locator. [page_contract.md](page_contract.md) in this repo is the contract for
+the Trip Builder portal and doubles as a format example.
 
 ## Environment variables
 
 | Variable | Default | Description |
 |---|---|---|
-| `ANTHROPIC_API_KEY` | – | **Required.** Anthropic API key (from console.anthropic.com). |
+| `LLM_PROVIDER` | `claude` | `claude` or `ollama`. With `ollama`, Agents 1–3 also run locally and no Anthropic key is needed. |
+| `CLOUD_AGENTS` | – | Comma list of agents (`triage`,`architect`,`automation`) kept on Claude even when `LLM_PROVIDER=ollama`. |
+| `ANTHROPIC_API_KEY` | – | Required when `LLM_PROVIDER=claude`. Anthropic API key (from console.anthropic.com). |
 | `CLAUDE_TRIAGE_MODEL` / `_EFFORT` / `_MAX_TOKENS` | `claude-sonnet-5-5` / `medium` / `16000` | Model for Agent 1 (Intake Triager). |
 | `CLAUDE_ARCHITECT_MODEL` / `_EFFORT` / `_MAX_TOKENS` | `claude-sonnet-5-5` / `high` / `32000` | Model for Agent 2 (Test Architect). |
 | `CLAUDE_AUTOMATION_MODEL` / `_EFFORT` / `_MAX_TOKENS` | `claude-opus-5-5` / `high` / `64000` | Model for Agent 3 (TS Automation Engineer). `MAX_TOKENS` includes thinking. |
@@ -193,15 +282,18 @@ The `GITHUB_TOKEN` should be a fine-grained PAT scoped only to the test repo wit
 | `OLLAMA_BASE_URL` | `http://localhost:11434/v1` | Ollama's OpenAI-compatible endpoint. |
 | `OLLAMA_MODEL` | `qwen2.5-coder:7b` | Local model used by Agent 4. |
 | `OLLAMA_TIMEOUT_SECONDS` | `300` | Timeout for each Ollama request. |
-| `GITHUB_TOKEN` | – | PAT used to push `qa/*` branches. |
-| `TEST_REPO_URL` | – | HTTPS clone URL of the Playwright repo. |
-| `TEST_REPO_LOCAL_PATH` | – | **Required.** Absolute path of the dedicated local clone. |
+| `TEST_REPO_LOCAL_PATH` | – | **Required.** Absolute path of the Playwright project on *this* machine. |
+| `TEST_REPO_NO_GIT` | `true` in `.env.example` | `true` = Mode A: write the spec and run it in place, no git operations. `false` = Mode B: clone/branch/commit. |
+| `GITHUB_TOKEN` | – | Mode B only. PAT used to push `qa/*` branches. |
+| `TEST_REPO_URL` | – | Mode B only. HTTPS clone URL of the Playwright repo. |
 | `TEST_REPO_BASE_BRANCH` | `main` | Branch that QA branches are created from. |
 | `TEST_SPEC_DIR` | `tests/qa` | Where spec files are written, relative to the repo root. |
 | `GIT_PUSH_ENABLED` | `true` | Set to `false` to commit locally only (useful for dry runs). |
 | `GIT_AUTHOR_NAME` / `GIT_AUTHOR_EMAIL` | `QA Agent` / noreply | Commit identity. |
 | `GIT_TIMEOUT_SECONDS` | `120` | Timeout for each git command. |
-| `PNPM_INSTALL_TIMEOUT_SECONDS` | `600` | Timeout for `pnpm install`. |
+| `PACKAGE_MANAGER` | `npm` in `.env.example` | `npm` or `pnpm`. Must match the lockfile committed in the test project. |
+| `SKIP_DEPENDENCY_INSTALL` | `true` in `.env.example` | Skip the install step when `node_modules` is already present and human-managed. |
+| `PNPM_INSTALL_TIMEOUT_SECONDS` | `600` | Timeout for the dependency install. |
 | `PLAYWRIGHT_TIMEOUT_SECONDS` | `1800` | Timeout for the Playwright test run. |
 | `PLAYWRIGHT_INSTALL_BROWSERS` | `false` | Install Chromium before every run. |
 | `PLAYWRIGHT_EXTRA_ARGS` | `--reporter=line` | Extra CLI arguments for `playwright test`. |
@@ -220,6 +312,14 @@ The `GITHUB_TOKEN` should be a fine-grained PAT scoped only to the test repo wit
 | `MAX_DIFF_CHARS`, `MAX_ENV_LOG_CHARS`, `MAX_EXEC_LOG_CHARS_FOR_LLM` | see `.env.example` | Prompt size limits. Longer inputs are truncated in the middle. |
 | `CALLBACK_TIMEOUT_SECONDS` | `30` | Timeout for the n8n callback request. |
 | `LOG_LEVEL` | `INFO` | Python log level. |
+| `OLLAMA_MAX_TOKENS` | `4096` | Output cap per local-model call. |
+| `OLLAMA_MAX_TEST_CASES` | `5` | Plan-size cap for the Test Architect on a local model. |
+| `PAGE_CONTRACT_PATH` | – | Markdown file of real roles/labels/test IDs for the app under test. Strongly recommended. |
+| `QA_DB_PATH` | `qa_runs.db` | SQLite file holding run history and per-phase artifacts. Created on first start. |
+| `DASHBOARD_TARGET_URL` | – | Target URL used by runs started from the dashboard buttons. |
+| `JIRA_BASE_URL` / `JIRA_EMAIL` / `JIRA_API_TOKEN` | – | Set all three to make the board poll Jira. With any of them missing it reads `dashboard_seed.json`. |
+| `JIRA_JQL` | see `.env.example` | Which tickets the board shows. |
+| `JIRA_POLL_SECONDS` / `JIRA_TIMEOUT_SECONDS` | `60` / `20` | Jira poll interval and request timeout. |
 
 ## Running
 
@@ -242,6 +342,39 @@ curl -s http://localhost:8000/health
 ```
 
 Interactive API docs are at http://localhost:8000/docs.
+
+### Dashboard
+
+<http://127.0.0.1:8000/dashboard> is a local board that joins the QA queue to live
+pipeline state. Each row is a ticket with a pipeline strip (triage → architect →
+automation → report → closeout) and buttons that start a single stage; stages are
+cumulative, so `architect` runs triage first. "What the agent did" opens the
+extracted criteria, the test plan and the generated spec for a finished run.
+
+The queue comes from Jira when `JIRA_BASE_URL`, `JIRA_EMAIL` and `JIRA_API_TOKEN`
+are all set. Otherwise the board reads [dashboard_seed.json](dashboard_seed.json)
+and shows an amber "Jira is not configured" banner — that is the expected state
+for a fresh clone, and the sample ticket in that file is enough to exercise the
+whole pipeline.
+
+Run history and per-phase artifacts are persisted by [run_store.py](run_store.py)
+into the SQLite file at `QA_DB_PATH` (`qa_runs.db` by default, created on first
+start and git-ignored), so the board survives a restart.
+
+The dashboard is deliberately **unauthenticated** and the service binds to
+`127.0.0.1`. Putting `QA_SERVICE_API_KEY` into a URL or cookie to protect a page
+you open in a browser would be worse than not protecting it; the `/qa/*` API keeps
+its key. Do not expose this port.
+
+The same thing from the command line:
+
+```bash
+curl -s -X POST http://127.0.0.1:8000/dashboard/api/start   -H 'Content-Type: application/json'   -d '{"ticket_id":"TB-601","stage":"triage"}'
+curl -s http://127.0.0.1:8000/dashboard/api/board
+```
+
+On Windows use `Invoke-RestMethod`, not `curl` — see [DEMO.md](DEMO.md), which has
+the PowerShell form of every command here.
 
 ## API
 
@@ -310,6 +443,6 @@ Returns the run's status (`queued`, `running`, `completed` or `crashed`), the ou
 ## Operational notes
 
 - Re-running a ticket imports a **new** set of Xray tests; it doesn't update the previous set.
-- The run registry and the daily budget counter live **in memory** and reset on restart. Put them in Redis or Postgres if you need persistence or more than one worker.
+- Run history and per-phase artifacts are persisted to SQLite (`QA_DB_PATH`), so the dashboard survives a restart. The *active* run registry and the daily budget counter still live **in memory** and reset on restart. Keep a single worker; move these to Redis or Postgres if you need more than one.
 - The spec is written as `<TICKET>.spec.ts`. The ticket ID is validated, which prevents path traversal and invalid branch names.
 - The report header (status, counts, branch, tokens) is built in Python. The local model only formats the log details, so it cannot change the verdict.

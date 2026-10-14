@@ -46,3 +46,12 @@ Thumbs.db
 node_modules/
 test-results/
 playwright-report/
+
+# --- Run store (SQLite, recreated on first start) ------------------------------
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# --- Local working copy of the Playwright test repo, if cloned inside this one --
+/search-e2e/
