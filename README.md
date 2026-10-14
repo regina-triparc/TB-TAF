@@ -90,6 +90,37 @@ selector that switches the LLM provider for new runs. Runs started from the
 terminal appear there too. `uvicorn main:app --host 127.0.0.1 --port 8000` still
 works and is equivalent.
 
+## One command: the dashboard
+
+Set everything up, start the service and open the board in your browser:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\start-dashboard.ps1
+```
+
+```bash
+scripts/start-dashboard.sh
+```
+
+Press **Full run** on a ticket. The run goes triage → test plan → spec → report.
+The spec is written into your local tripbuilder-e2e clone (`e2e/qa/<TICKET>.spec.ts`)
+and run there; nothing is committed or pushed. Watch the phases fill in, and open
+"what the agent did" for the criteria, the plan and the spec. Stop with Ctrl+C.
+
+Options:
+
+| Option | Default | Effect |
+|---|---|---|
+| `-Source` / `--source` | `seed` | `seed`: the demo queue (TB-601). `jira`: your real Jira queue. `auto`: Jira if configured. |
+| `-Provider` / `--provider` | from `.env` | Startup model; the board's **Model** selector switches it while running. |
+| `-TestRepo` / `--test-repo` | `../tripbuilder-e2e` | Your tripbuilder-e2e clone, if it is not next to this repo. |
+| `-Push` / `--push` | off | Use the agent's own clone and push `qa/<TICKET>` branches instead. |
+| `-Port` / `--port` | `8000` | The script refuses to start if the port is taken, which usually means an older service is still running with old settings. |
+| `-NoBrowser` / `--no-browser` | off | Don't open the browser. |
+
+It does the same setup as the script below: venv, requirements, `.env`, the local
+test repo and `doctor`.
+
 ## One command: the seeded ticket to a local test
 
 For someone who has cloned this repo, been sent the `.env` values, and cloned
@@ -247,7 +278,7 @@ skills/                        Markdown know-how appended to agent prompts (Play
 evals/                         eval cases, graders and runner
 data/seed_tickets.json         the ticket(s) used when Jira is not configured
 tests/                         offline smoke tests (python -m unittest)
-scripts/run-seeded.ps1, .sh    one command: seeded ticket -> spec in your local tripbuilder-e2e
+scripts/                       start-dashboard (board + Full run) and run-seeded (terminal), .ps1 and .sh
 docs/                          setup guides (macOS, Windows, Ollama-only) and the demo runbook
 ```
 
