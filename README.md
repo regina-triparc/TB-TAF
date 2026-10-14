@@ -30,7 +30,11 @@ python -m venv .venv
 source .venv/bin/activate
 ```
 
-On Windows PowerShell, activate with `.\.venv\Scripts\Activate.ps1` instead.
+On Windows PowerShell: create the venv with `py -3.12 -m venv .venv` (plain `python`
+is often the Microsoft Store stub), activate with `.\.venv\Scripts\Activate.ps1`, and
+use `copy .env.example .env` below. Clone to a short path such as `C:\code\TB-TAF`:
+some dependencies have deep file paths that exceed Windows' 260-character limit
+under a long folder, and `pip install` then fails with `No such file or directory`.
 
 ```bash
 pip install -r requirements.txt

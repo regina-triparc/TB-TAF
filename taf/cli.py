@@ -255,6 +255,7 @@ def build_parser() -> argparse.ArgumentParser:
     from taf.config import LLM_PROVIDERS
 
     parser = argparse.ArgumentParser(prog="python -m taf", description="Autonomous QA framework - terminal interface.")
+    parser.add_argument("-v", "--verbose", action="store_true", help="show INFO logs (agent events)")
     sub = parser.add_subparsers(dest="command", required=True)
 
     sub.add_parser("doctor", help="check this machine's setup").set_defaults(fn=cmd_doctor)
@@ -302,4 +303,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         except (AttributeError, ValueError):
             pass
     args = build_parser().parse_args(argv)
+    if args.command != "serve" and not args.verbose:
+        # Agent events are logged at INFO for the service log; on a terminal the
+        # phase lines below say the same thing, so keep only warnings and errors.
+        import logging
+
+        import taf.config  # noqa: F401  (configures logging first)
+        logging.getLogger().setLevel(logging.WARNING)
     return args.fn(args)
