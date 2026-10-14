@@ -15,12 +15,13 @@ Run states:   running | completed | failed | cancelled
 from __future__ import annotations
 
 import json
-import os
 import sqlite3
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+from taf.config import SETTINGS, project_path
 
 PHASES = ("triage", "architect", "automation", "report", "closeout")
 
@@ -200,6 +201,5 @@ def get_store() -> RunStore:
     global _STORE
     with _STORE_LOCK:
         if _STORE is None:
-            path = os.getenv("QA_DB_PATH", "").strip() or "qa_runs.db"
-            _STORE = RunStore(path)
+            _STORE = RunStore(str(project_path(SETTINGS.qa_db_path)))
         return _STORE

@@ -1,7 +1,7 @@
 # Demo runbook — local QA pipeline (no Jira key required)
 
 Everything below runs in a **PowerShell** terminal in VS Code. Jira credentials are
-optional: with none set, the board reads `dashboard_seed.json`, which already holds
+optional: with none set, the board reads `data/seed_tickets.json`, which already holds
 TB-601. That is how every run in this project has been demonstrated so far.
 
 > **Don't use bare `curl` in PowerShell** — it is an alias for `Invoke-WebRequest`
@@ -12,6 +12,36 @@ Paths below are the ones from the machine this demo was recorded on
 `C:\Users\r.abduraxmanova\Documents\taf-tb\TripArc.TripBuilder\apps\search-e2e` for the
 Playwright project). **Substitute your own** — the second one is whatever you set
 as `TEST_REPO_LOCAL_PATH` in `.env`. See the README for how to choose it.
+
+---
+
+## Shortcut: no server, no model
+
+Everything below can also be done without starting the service. From the repo
+root, with the virtualenv active:
+
+```powershell
+python -m taf doctor
+```
+
+```powershell
+python -m taf run TB-601 --provider offline --stage full
+```
+
+```powershell
+python -m taf run TB-601 --stage triage
+```
+
+The first checks the setup, the second proves the pipeline end to end with no
+model, the third is a real triage on whatever `LLM_PROVIDER` resolves to. Runs
+started this way show up on the dashboard too.
+
+To switch the model of a service that is already running (instead of editing
+`.env` and restarting), use the **Model** selector on the board or:
+
+```powershell
+python -m taf providers --set ollama --server http://127.0.0.1:8000
+```
 
 ---
 
@@ -144,7 +174,7 @@ npx playwright show-report test-results/html
 
 ## Adding Jira later (optional)
 
-Add to `.env` and restart the service; `dashboard_seed.json` is then ignored and
+Add to `.env` and restart the service; `data/seed_tickets.json` is then ignored and
 the board polls Jira directly:
 
 ```

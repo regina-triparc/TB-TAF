@@ -1,0 +1,211 @@
+"""
+Configuration and logging.
+
+Every setting is read once from the environment (and `.env` at the project root)
+into the frozen `SETTINGS` object. Relative paths in settings are resolved against
+the project root, not the shell's working directory, so the service and the CLI
+behave the same wherever they are started from.
+"""
+from __future__ import annotations
+
+import logging
+import os
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import List
+
+from dotenv import load_dotenv
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+# Explicit path: the .env next to the code, whatever the current directory is.
+# Variables already present in the environment win (load_dotenv never overrides).
+load_dotenv(PROJECT_ROOT / ".env")
+
+LLM_PROVIDERS = ("claude", "ollama", "auto", "offline")
+
+
+def env_str(name: str, default: str = "") -> str:
+    """Read a string env var, stripping whitespace; empty values fall back to default."""
+    value = os.getenv(name, "").strip()
+    return value or default
+
+
+def env_int(name: str, default: int) -> int:
+    """Read an integer env var, falling back to `default` on missing/invalid values."""
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        logging.getLogger("qa.config").warning("Invalid integer for %s=%r, using %s", name, raw, default)
+        return default
+
+
+def env_bool(name: str, default: bool) -> bool:
+    """Read a boolean env var ("1", "true", "yes", "on" are truthy)."""
+    raw = os.getenv(name, "").strip().lower()
+    if not raw:
+        return default
+    return raw in {"1", "true", "yes", "on"}
+
+
+def project_path(value: str) -> Path:
+    """Expand `~` and anchor a relative path at the project root."""
+    path = Path(value).expanduser()
+    return path if path.is_absolute() else PROJECT_ROOT / path
+
+
+@dataclass(frozen=True)
+class Settings:
+    """All runtime configuration, resolved once at import time from the environment / .env."""
+
+    # --- LLM router (see taf/llm/router.py) ---------------------------------
+    # claude  = agents 1-3 on Claude, the report on Ollama (the original hybrid).
+    # ollama  = every agent on Ollama: no Anthropic key, no cloud cost.
+    # auto    = claude when ANTHROPIC_API_KEY is set, otherwise ollama.
+    # offline = deterministic built-in stand-in, no model at all. For smoke runs,
+    #           CI and evals of the pipeline mechanics - never for real QA.
+    llm_provider: str = field(default_factory=lambda: env_str("LLM_PROVIDER", "claude").lower())
+    # Agents that use Claude even when the provider is local (triage,architect,automation or all).
+    cloud_agents: str = field(default_factory=lambda: env_str("CLOUD_AGENTS", ""))
+
+    # --- Cloud LLM (Claude) -------------------------------------------------
+    anthropic_api_key: str = field(default_factory=lambda: env_str("ANTHROPIC_API_KEY"))
+    claude_triage_model: str = field(default_factory=lambda: env_str("CLAUDE_TRIAGE_MODEL", "claude-sonnet-5-5"))
+    claude_triage_effort: str = field(default_factory=lambda: env_str("CLAUDE_TRIAGE_EFFORT", "medium"))
+    claude_triage_max_tokens: int = field(default_factory=lambda: env_int("CLAUDE_TRIAGE_MAX_TOKENS", 16_000))
+    claude_architect_model: str = field(default_factory=lambda: env_str("CLAUDE_ARCHITECT_MODEL", "claude-sonnet-5-5"))
+    claude_architect_effort: str = field(default_factory=lambda: env_str("CLAUDE_ARCHITECT_EFFORT", "high"))
+    claude_architect_max_tokens: int = field(default_factory=lambda: env_int("CLAUDE_ARCHITECT_MAX_TOKENS", 32_000))
+    claude_automation_model: str = field(default_factory=lambda: env_str("CLAUDE_AUTOMATION_MODEL", "claude-opus-5-5"))
+    claude_automation_effort: str = field(default_factory=lambda: env_str("CLAUDE_AUTOMATION_EFFORT", "high"))
+    claude_automation_max_tokens: int = field(default_factory=lambda: env_int("CLAUDE_AUTOMATION_MAX_TOKENS", 64_000))
+    claude_timeout_s: int = field(default_factory=lambda: env_int("CLAUDE_TIMEOUT_SECONDS", 600))
+    claude_pricing_json: str = field(default_factory=lambda: env_str("CLAUDE_PRICING_JSON"))
+
+    # --- Prompt caching -----------------------------------------------------
+    prompt_cache_agents: str = field(default_factory=lambda: env_str("PROMPT_CACHE_AGENTS", "automation"))
+    prompt_cache_ttl: str = field(default_factory=lambda: env_str("PROMPT_CACHE_TTL", "5m"))  # "5m" | "1h"
+    spec_repair_attempts: int = field(default_factory=lambda: env_int("SPEC_REPAIR_ATTEMPTS", 2))
+
+    # --- Local LLM (Ollama) -------------------------------------------------
+    ollama_base_url: str = field(default_factory=lambda: env_str("OLLAMA_BASE_URL", "http://localhost:11434/v1"))
+    ollama_model: str = field(default_factory=lambda: env_str("OLLAMA_MODEL", "qwen2.5-coder:7b"))
+    ollama_timeout_s: int = field(default_factory=lambda: env_int("OLLAMA_TIMEOUT_SECONDS", 300))
+    ollama_triage_model: str = field(default_factory=lambda: env_str("OLLAMA_TRIAGE_MODEL"))
+    ollama_architect_model: str = field(default_factory=lambda: env_str("OLLAMA_ARCHITECT_MODEL"))
+    ollama_automation_model: str = field(default_factory=lambda: env_str("OLLAMA_AUTOMATION_MODEL"))
+    ollama_max_tokens: int = field(default_factory=lambda: env_int("OLLAMA_MAX_TOKENS", 4096))
+    ollama_max_test_cases: int = field(default_factory=lambda: env_int("OLLAMA_MAX_TEST_CASES", 5))
+
+    # --- Skills (skills/*/SKILL.md appended to agent system prompts) --------
+    skills_enabled: bool = field(default_factory=lambda: env_bool("SKILLS_ENABLED", True))
+    skills_dir: str = field(default_factory=lambda: env_str("SKILLS_DIR", "skills"))
+    # Off by default on local models: a small context window fills fast, and the
+    # Ollama setup was tuned without them.
+    skills_on_local: bool = field(default_factory=lambda: env_bool("SKILLS_ON_LOCAL", False))
+    skills_max_chars: int = field(default_factory=lambda: env_int("SKILLS_MAX_CHARS", 12_000))
+
+    # --- TypeScript test repository ----------------------------------------
+    github_token: str = field(default_factory=lambda: env_str("GITHUB_TOKEN"))
+    test_repo_url: str = field(default_factory=lambda: env_str("TEST_REPO_URL"))
+    test_repo_local_path: str = field(default_factory=lambda: env_str("TEST_REPO_LOCAL_PATH"))
+    test_repo_base_branch: str = field(default_factory=lambda: env_str("TEST_REPO_BASE_BRANCH", "main"))
+    test_spec_dir: str = field(default_factory=lambda: env_str("TEST_SPEC_DIR", "tests/qa"))
+    git_push_enabled: bool = field(default_factory=lambda: env_bool("GIT_PUSH_ENABLED", True))
+    git_author_name: str = field(default_factory=lambda: env_str("GIT_AUTHOR_NAME", "QA Agent"))
+    git_author_email: str = field(default_factory=lambda: env_str("GIT_AUTHOR_EMAIL", "qa-agent@users.noreply.github.com"))
+    git_timeout_s: int = field(default_factory=lambda: env_int("GIT_TIMEOUT_SECONDS", 120))
+    # Write the spec and run it IN PLACE: no fetch, no branch, no commit, no push.
+    no_git: bool = field(default_factory=lambda: env_bool("TEST_REPO_NO_GIT", False))
+
+    # --- Package manager / Playwright execution -----------------------------
+    pnpm_install_timeout_s: int = field(default_factory=lambda: env_int("PNPM_INSTALL_TIMEOUT_SECONDS", 600))
+    playwright_timeout_s: int = field(default_factory=lambda: env_int("PLAYWRIGHT_TIMEOUT_SECONDS", 1800))
+    playwright_install_browsers: bool = field(default_factory=lambda: env_bool("PLAYWRIGHT_INSTALL_BROWSERS", False))
+    playwright_extra_args: str = field(default_factory=lambda: env_str("PLAYWRIGHT_EXTRA_ARGS", "--reporter=line"))
+    package_manager: str = field(default_factory=lambda: env_str("PACKAGE_MANAGER", "pnpm").lower())
+    skip_dependency_install: bool = field(default_factory=lambda: env_bool("SKIP_DEPENDENCY_INSTALL", False))
+    # Markdown file of REAL roles/names captured from the app under test.
+    page_contract_path: str = field(default_factory=lambda: env_str("PAGE_CONTRACT_PATH"))
+
+    # --- Budget / Paperclip Control Room -----------------------------------
+    max_cloud_tokens_per_run: int = field(default_factory=lambda: env_int("MAX_CLOUD_TOKENS_PER_RUN", 250_000))
+    max_cloud_tokens_per_day: int = field(default_factory=lambda: env_int("MAX_CLOUD_TOKENS_PER_DAY", 2_000_000))
+    paperclip_api_url: str = field(default_factory=lambda: env_str("PAPERCLIP_API_URL").rstrip("/"))
+    paperclip_api_key: str = field(default_factory=lambda: env_str("PAPERCLIP_API_KEY"))
+    paperclip_project: str = field(default_factory=lambda: env_str("PAPERCLIP_PROJECT"))
+    paperclip_enforce_budget: bool = field(default_factory=lambda: env_bool("PAPERCLIP_ENFORCE_BUDGET", True))
+
+    # --- Xray ---------------------------------------------------------------
+    xray_project_key: str = field(default_factory=lambda: env_str("XRAY_PROJECT_KEY"))
+    xray_test_folder: str = field(default_factory=lambda: env_str("XRAY_TEST_FOLDER", "AI QA/{ticket_id}"))
+    xray_requirement_link_type: str = field(default_factory=lambda: env_str("XRAY_REQUIREMENT_LINK_TYPE", "Test"))
+    xray_include_priority: bool = field(default_factory=lambda: env_bool("XRAY_INCLUDE_PRIORITY", False))
+
+    # --- Dashboard / run history / seed -------------------------------------
+    qa_db_path: str = field(default_factory=lambda: env_str("QA_DB_PATH", "qa_runs.db"))
+    dashboard_target_url: str = field(default_factory=lambda: env_str("DASHBOARD_TARGET_URL"))
+    seed_tickets_path: str = field(default_factory=lambda: env_str("SEED_TICKETS_PATH", "data/seed_tickets.json"))
+
+    # --- Service ------------------------------------------------------------
+    qa_service_api_key: str = field(default_factory=lambda: env_str("QA_SERVICE_API_KEY"))
+    host: str = field(default_factory=lambda: env_str("HOST", "127.0.0.1"))
+    port: int = field(default_factory=lambda: env_int("PORT", 8000))
+    max_diff_chars: int = field(default_factory=lambda: env_int("MAX_DIFF_CHARS", 120_000))
+    max_env_log_chars: int = field(default_factory=lambda: env_int("MAX_ENV_LOG_CHARS", 40_000))
+    max_exec_log_chars_for_llm: int = field(default_factory=lambda: env_int("MAX_EXEC_LOG_CHARS_FOR_LLM", 60_000))
+    callback_timeout_s: int = field(default_factory=lambda: env_int("CALLBACK_TIMEOUT_SECONDS", 30))
+    log_level: str = field(default_factory=lambda: env_str("LOG_LEVEL", "INFO"))
+
+    @property
+    def secrets(self) -> List[str]:
+        """Values that must never appear in logs, reports or subprocess output."""
+        candidates = (self.github_token, self.anthropic_api_key, self.paperclip_api_key,
+                      os.getenv("JIRA_API_TOKEN", "").strip())
+        return [s for s in candidates if s and len(s) >= 8]
+
+
+SETTINGS = Settings()
+if SETTINGS.llm_provider not in LLM_PROVIDERS:
+    raise SystemExit(f"LLM_PROVIDER must be one of {', '.join(LLM_PROVIDERS)}; got {SETTINGS.llm_provider!r}")
+
+
+# =============================================================================
+# Logging (with secret redaction)
+# =============================================================================
+
+
+class _RedactSecretsFilter(logging.Filter):
+    """Scrubs known secrets from every log record so tokens never land in log files."""
+
+    def __init__(self, secrets: List[str]) -> None:
+        super().__init__()
+        self._secrets = secrets
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if self._secrets:
+            message = record.getMessage()
+            for secret in self._secrets:
+                message = message.replace(secret, "***REDACTED***")
+            record.msg, record.args = message, None
+        return True
+
+
+def redact(text: str) -> str:
+    """Remove configured secrets from arbitrary text (subprocess output, error strings, ...)."""
+    for secret in SETTINGS.secrets:
+        text = text.replace(secret, "***REDACTED***")
+    return text
+
+
+logging.basicConfig(
+    level=getattr(logging, SETTINGS.log_level.upper(), logging.INFO),
+    format="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
+)
+for _handler in logging.getLogger().handlers:
+    _handler.addFilter(_RedactSecretsFilter(SETTINGS.secrets))
+
+log = logging.getLogger("qa")

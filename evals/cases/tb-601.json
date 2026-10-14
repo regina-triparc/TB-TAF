@@ -1,0 +1,28 @@
+{
+  "id": "tb-601",
+  "description": "The seeded TripBuilder ticket: Info services in the TSP itinerary. Reads summary and description from data/seed_tickets.json.",
+  "ticket": {
+    "key": "TB-601",
+    "from_seed": true,
+    "target_url": "https://tripbuilder-portal-gmguhndwguh2fxh6.a03.azurefd.net/"
+  },
+  "expect": {
+    "triage": {
+      "min_criteria": 8,
+      "risk_level_in": ["medium", "high", "critical"],
+      "must_mention": ["Info only", "Travellers", "Add Service"]
+    },
+    "architect": {
+      "min_cases": 4,
+      "max_cases": 25,
+      "min_automatable": 3,
+      "must_cover": ["Info only", "Travellers"]
+    },
+    "automation": {
+      "min_tests": 3,
+      "require": ["@playwright/test", "test.describe", "BASE_URL"],
+      "forbid": ["waitForTimeout", "page.$(", "page.$$("],
+      "prefer": ["getByRole", "test.step", "expect("]
+    }
+  }
+}
