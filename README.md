@@ -1,22 +1,29 @@
 # Autonomous QA Multi-Agent Framework
 
-A FastAPI + LangChain + LangGraph service that takes a Jira ticket in **Ready for QA** and runs a full QA cycle without a person in the loop:
+A FastAPI + LangChain + LangGraph service that takes a Jira ticket in **Ready for QA** and runs a QA cycle:
 
 1. Triage the acceptance criteria and the PR diff.
-2. Design a functional and non-functional test plan, plus Xray test cases (as bulk-import JSON and as CSV).
-3. Generate a Playwright **TypeScript** spec, commit it to the test repo, and run it.
+2. Design a functional and non-functional test plan, as Xray test cases.
+3. Write the Xray test cases and a Playwright **TypeScript** spec to the test repo
+   ([tripbuilder-e2e](https://github.com/regina-triparc/tripbuilder-e2e)), commit them together on a
+   `qa/<TICKET>` branch for review, and run the spec.
 4. Summarise the terminal logs into a Markdown report.
-5. Send the verdict back to n8n, which updates Jira and imports the test cases into Xray.
+5. After the pull request is merged, export the reviewed test cases to Xray in Jira.
 
 ```
-Jira ──"Ready for QA"──▶ n8n ──POST /qa/runs──▶ QA service ──callback──▶ n8n ──▶ Jira status + comment
-                         (diff, Azure/DB logs)       │                         └──▶ Xray bulk import (JSON)
-                                                     └──REST──▶ Paperclip (issue per run, live comments, cost ledger, budget stop)
+Jira (ticket + linked PRs) ─▶ QA service ─▶ tripbuilder-e2e, branch qa/<TICKET>:
+TripArc.TripBuilder (diff) ─┘   (dashboard          xray/<TICKET>/   test cases (JSON, CSV, plan)
+                                 or CLI)            e2e/qa/<TICKET>.spec.ts
+                                                       │  pull request, review, merge
+                                                       ▼
+                                          python -m taf xray export <TICKET> ─▶ Xray in Jira
 ```
 
-Everything can also be driven from a terminal and from a local dashboard, with
-no n8n, Jira or API key: the repo ships a seeded ticket (TB-601) and an
-`offline` model provider, so a fresh clone can run the pipeline end to end.
+Runs are started from the local dashboard or a terminal. Nothing else is needed
+for a first run: the repo ships a seeded ticket (TB-601) and an `offline` model
+provider, so a fresh clone can run the pipeline end to end. n8n and Paperclip are
+optional integrations, and no local run uses them (see
+[Optional: n8n integration](#optional-n8n-integration)).
 
 ## Quick start (any machine, about 2 minutes)
 
@@ -211,6 +218,41 @@ whole change. For a real ticket, use Claude for triage and automation, or at
 least `CLOUD_AGENTS=automation`. Run local models with 8 GB or more of free RAM;
 below about 2.5 GB free, one call can take an hour and time out.
 
+## Xray test cases: generated, reviewed, then exported
+
+Test cases go through the same review as the spec. For each ticket, the Automation
+Engineer writes `xray/<TICKET>/` into the test repo, next to `e2e/qa/<TICKET>.spec.ts`:
+
+| File | What it is |
+|---|---|
+| `<TICKET>.xray.json` | Xray Cloud bulk-import payload, exactly what gets exported. Edit it in review to change what is imported. |
+| `<TICKET>.xray.csv` | The same cases for Xray's Test Case Importer (manual import, audit copy). |
+| `<TICKET>.test-plan.md` | The plan in readable form, for reviewers. |
+
+Both files are committed in one commit on `qa/<TICKET>`. With the local scripts
+(in-place mode) they are written but not committed.
+
+Export happens only after review, from what was merged:
+
+```bash
+python -m taf xray export TB-601
+```
+
+```bash
+python -m taf xray export TB-601 --apply
+```
+
+The first is a dry run: it reads `xray/TB-601/TB-601.xray.json` from the test repo's
+base branch (`main`), meaning the merged version, and lists what would be imported.
+`--apply` imports it with `XRAY_CLIENT_ID` / `XRAY_CLIENT_SECRET` (Xray Cloud >
+Settings > API Keys) and prints the created Jira keys. Other options:
+
+- `--ref qa/TB-601` exports an unmerged branch.
+- With the test repo used in place, the working-tree file is read.
+
+The test cases are filed under `XRAY_TEST_FOLDER` and linked to the story with
+`XRAY_REQUIREMENT_LINK_TYPE`.
+
 ## Terminal commands
 
 Run from the project root with the virtualenv active.
@@ -229,6 +271,7 @@ Run from the project root with the virtualenv active.
 | `scripts/run-seeded.ps1` / `scripts/run-seeded.sh` | Everything above in one go for the seeded ticket - see [One command](#one-command-the-seeded-ticket-to-a-local-test). |
 | `python -m taf skills` | Lists skills and the agents they apply to. |
 | `python -m taf eval --provider ollama` | Scores agent output against `evals/cases`. |
+| `python -m taf xray export TB-601 [--apply]` | Exports the ticket's reviewed Xray test cases from the test repo (dry run without `--apply`). |
 | `python -m taf serve [--reload]` | Starts the API and the dashboard. |
 | `python -m unittest` | Offline smoke tests. |
 
@@ -254,21 +297,26 @@ taf/                           the service, as a package
     router.py                  the LLM router: claude / ollama / auto / offline, per agent and per run
     offline.py                 the no-model provider
     pricing.py, budget.py      token pricing and the cloud spend guard
-  agents/                      one module per agent
-    triage.py, architect.py, automation.py, reporter.py, closeout.py
+  agents/                      one folder per agent: agent.py + Markdown prompt(s) + README.md
+    triage/                    Agent 1  criteria, impacted areas, risks           prompt.md
+    architect/                 Agent 2  test plan + Xray test cases               prompt.md, local-model-limits.md
+    automation/                Agent 3  spec + xray/ into the test repo, run      prompt.md, repair-prompt.md
+    reporter/                  Agent 4  logs -> Markdown report                   prompt.md
+    closeout/                  Agent 5  optional n8n callback (unused locally)
     base.py                    the envelope every agent runs in (events, error handling)
     schemas.py, state.py       structured outputs and the shared LangGraph state
-    graph.py                   the LangGraph wiring
+    graph.py, prompts.py       the LangGraph wiring; the .md prompt loader
   integrations/
     jira/board.py              Jira queue for the dashboard (falls back to the seed file)
-    jira/xray.py               Xray CSV and bulk-import JSON
+    jira/xray.py               Xray test cases (JSON, CSV, plan) as written to the test repo
+    jira/xray_cloud.py         Xray Cloud import, used by `taf xray export`
     github/repository.py       the Playwright test repo: git, install, playwright
     github/pull_requests.py    PR diffs from the source repo, condensed per agent
     paperclip/control_room.py  Paperclip mirror and budget checks
   skills.py                    loads skills/*/SKILL.md into agent prompts
   runs/
     stages.py                  runs some stages for one ticket (dashboard and CLI)
-    registry.py                the n8n flow's background runner
+    registry.py                background runner for POST /qa/runs (optional n8n flow)
     store.py                   SQLite run history
   api/
     app.py                     /health, /qa/runs
@@ -337,7 +385,7 @@ check; run it with `claude` or `ollama` after changing a prompt or skill. Detail
 | 2 | Test Architect | Claude **Sonnet 5.5**, effort `high` | Risk-based test design and the Xray matrix |
 | 3 | TS Automation Engineer | Claude **Opus 5.5**, effort `high` + local git/pnpm | The hardest task: runnable Playwright code for an app it only sees through a diff, repaired from Playwright's own loader errors |
 | 4 | Report Synthesizer | Qwen 2.5-Coder 7B on Ollama (local, free) | Log parsing and formatting |
-| 5 | Closeout | HTTP | Sends the n8n callback |
+| 5 | Closeout | HTTP | Optional n8n callback; not used by local runs |
 
 Each agent's model, effort and output limit can be changed in `.env` (`CLAUDE_<AGENT>_MODEL` / `_EFFORT` / `_MAX_TOKENS`). Claude Haiku 4.5 isn't used: it can be retired as soon as October 15, 2026.
 
@@ -365,7 +413,7 @@ START → intake_triager → test_architect → automation_engineer → report_s
               └── aborted ──────┴───────────────────────────────────────┘
 ```
 
-If a cloud node aborts (budget cap hit or an unrecoverable LLM error), the graph jumps straight to the report and closeout. **n8n always gets a callback**, with `QA Failed` and the reason.
+If a cloud node aborts (budget cap hit or an unrecoverable LLM error), the graph jumps straight to the report (and, on n8n runs, the closeout). **n8n always gets a callback**, with `QA Failed` and the reason.
 
 **Shared state** (`QAState` in `taf/agents/state.py`): `ticket_id`, `summary`, `description`, `github_diff`, `target_url`, `test_plan`, `generated_typescript_code`, `execution_logs`, `execution_passed`, `xray_csv_content`, `final_report`, plus `xray_tests_json`. It also carries operational fields such as `run_id`, `git_branch`, `errors` and `aborted`.
 
@@ -470,9 +518,11 @@ For every ticket it:
 1. clones the repo on the first run, and installs packages with `npm ci`;
 2. checks out `main` and pulls;
 3. creates or resets the branch `qa/<TICKET>`;
-4. writes `e2e/qa/<TICKET>.spec.ts`, and repairs it until Playwright can load it;
-5. commits and pushes `qa/<TICKET>` to GitHub;
-6. runs it with `--project=qa-agent`.
+4. writes the ticket's Xray test cases to `xray/<TICKET>/` (see
+   [Xray test cases](#xray-test-cases-generated-reviewed-then-exported));
+5. writes `e2e/qa/<TICKET>.spec.ts`, and repairs it until Playwright can load it;
+6. commits both in one commit and pushes `qa/<TICKET>` to GitHub;
+7. runs the spec with `--project=qa-agent`.
 
 A person then opens a pull request from `qa/<TICKET>` into `main`, reviews the
 spec and merges it. A failing generated test is either a guessed selector (fix
@@ -572,6 +622,9 @@ the Trip Builder portal and doubles as a format example.
 | `XRAY_PROJECT_KEY` | ticket prefix | Jira project the Xray tests are created in. |
 | `XRAY_TEST_FOLDER` | `AI QA/{ticket_id}` | Xray test-repository folder. |
 | `XRAY_REQUIREMENT_LINK_TYPE` | `Test` | Jira link type used to link each test to the story. |
+| `XRAY_DIR` | `xray` | Folder in the test repo for each ticket's Xray files (`xray/<TICKET>/`). |
+| `XRAY_CLIENT_ID` / `XRAY_CLIENT_SECRET` | – | Only for `taf xray export --apply`. Xray Cloud > Settings > API Keys. |
+| `XRAY_BASE_URL` | `https://xray.cloud.getxray.app` | Xray Cloud API base URL. |
 | `XRAY_INCLUDE_PRIORITY` | `false` | Send priority names (Highest…Lowest). Only enable this if your Jira uses those names. |
 | `MAX_CLOUD_TOKENS_PER_RUN` | `250000` | Hard cap on Claude tokens per ticket (`0` = off). Prompt-cache reads don't count. |
 | `MAX_CLOUD_TOKENS_PER_DAY` | `2000000` | Hard cap on Claude tokens per day, in memory (`0` = off). |
@@ -663,7 +716,17 @@ curl -s -X POST http://127.0.0.1:8000/dashboard/api/provider -H 'Content-Type: a
 On Windows use `Invoke-RestMethod`, not `curl` — see [docs/DEMO.md](docs/DEMO.md), which has
 the PowerShell form of every command here.
 
-## API
+## Optional: n8n integration
+
+**Not used by local runs.** The dashboard, `python -m taf run` and the scripts in
+`scripts/` never call n8n. This section describes an alternative wiring, kept
+working but inactive:
+1. n8n catches the Jira transition and starts a run over HTTP.
+2. The last agent (Closeout, `taf/agents/closeout/`) posts the verdict back to n8n.
+3. n8n updates Jira and imports into Xray.
+
+Use it if you want Jira-triggered runs on a hosted service. Locally, the review
+flow above (test repo → pull request → `taf xray export`) replaces it.
 
 ### `POST /qa/runs` → `202 Accepted`
 
@@ -690,7 +753,7 @@ If a run for the same ticket is already in progress, the service returns `409`.
 
 Returns the run's status (`queued`, `running`, `completed` or `crashed`), the outcome, the branch, token usage, errors and the final report.
 
-### Callback to n8n
+### Callback to n8n (Closeout agent)
 
 ```json
 {
@@ -713,7 +776,7 @@ Returns the run's status (`queued`, `running`, `completed` or `crashed`), the ou
 
 `status` is either `"QA Passed"` or `"QA Failed"`. `xray_tests_json` is ready to send as-is to Xray Cloud's `POST /api/v2/import/test/bulk`. Use `metadata.run_id` as an idempotency key in n8n: the callback is retried on connection errors, 429 and 502–504.
 
-## n8n workflow outline
+### n8n workflow outline
 
 1. **Jira Trigger**: fires on an issue transition to *Ready for QA*.
 2. **GitHub node**: fetches the linked PR's diff (`Accept: application/vnd.github.diff`).
@@ -729,7 +792,7 @@ Returns the run's status (`queued`, `running`, `completed` or `crashed`), the ou
 
 ## Operational notes
 
-- Re-running a ticket imports a **new** set of Xray tests; it doesn't update the previous set.
+- Exporting a ticket's test cases twice creates a **second** set in Xray; it doesn't update the first.
 - Run history and per-phase artifacts are persisted to SQLite (`QA_DB_PATH`), so the dashboard survives a restart. The *active* run registry and the daily budget counter still live **in memory** and reset on restart. Keep a single worker; move these to Redis or Postgres if you need more than one.
 - The spec is written as `<TICKET>.spec.ts`. The ticket ID is validated, which prevents path traversal and invalid branch names.
 - The report header (status, counts, branch, tokens) is built in Python. The local model only formats the log details, so it cannot change the verdict.

@@ -17,7 +17,8 @@ class QAState(TypedDict, total=False):
     execution_logs: str
     execution_passed: bool
     xray_csv_content: str
-    xray_tests_json: List[Dict[str, Any]]  # Xray Cloud bulk-import payload (automatic import by n8n)
+    xray_tests_json: List[Dict[str, Any]]  # Xray Cloud bulk-import payload
+    xray_files: List[str]                  # where it was written in the test repo (XRAY_DIR/<TICKET>/...)
     final_report: str
 
     # --- Operational fields -------------------------------------------------
