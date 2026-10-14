@@ -27,6 +27,7 @@ from taf.api import dashboard
 from taf.config import SETTINGS, log
 from taf.core.text import utc_now
 from taf.integrations.github.repository import TEST_REPO
+from taf.integrations.jira.board import get_board
 from taf.integrations.paperclip.control_room import CONTROL_ROOM
 from taf.llm.router import ROUTER
 from taf.runs.registry import RUNS, execute_qa_run
@@ -133,6 +134,11 @@ def health() -> Dict[str, Any]:
         "test_repo_mode": {"no_git": SETTINGS.no_git,
                            "package_manager": SETTINGS.package_manager,
                            "skip_install": SETTINGS.skip_dependency_install},
+        "ticket_source": {"setting": SETTINGS.ticket_source,
+                          "resolved": get_board().resolve_source()},
+        "source_repo": {"url": SETTINGS.source_repo_url or None,
+                        "local_path": SETTINGS.source_repo_local_path,
+                        "fetch_pr_diffs": SETTINGS.fetch_pr_diffs},
         "paperclip": CONTROL_ROOM.health(),
         "budget": {"per_run": SETTINGS.max_cloud_tokens_per_run, "per_day": SETTINGS.max_cloud_tokens_per_day},
     }

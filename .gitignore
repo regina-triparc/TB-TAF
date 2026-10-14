@@ -53,8 +53,11 @@ playwright-report/
 *.db-wal
 *.db-shm
 
-# --- Local working copy of the Playwright test repo, if cloned inside this one --
+# --- Playwright test repos must never be committed here ----------------------
+# Generated tests live in github.com/regina-triparc/tripbuilder-e2e. These names
+# only guard against a copy or clone ending up inside this folder by mistake.
 /search-e2e/
+/tripbuilder-e2e*/
 
 # --- Eval output ---------------------------------------------------------------
 evals/results/

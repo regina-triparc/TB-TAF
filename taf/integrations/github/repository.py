@@ -19,6 +19,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
+from dotenv import dotenv_values
+
 from taf.config import SETTINGS, Settings, project_path, redact
 from taf.core.text import strip_ansi
 
@@ -300,8 +302,19 @@ class TestRepository:
         return result.ok
 
     # ----------------------------------------------------------- pnpm / PW --
+    def _test_repo_env(self) -> Dict[str, str]:
+        """Variables from TEST_REPO_ENV_FILE (never logged). Empty when unset or unreadable."""
+        if not self.settings.test_repo_env_file:
+            return {}
+        path = project_path(self.settings.test_repo_env_file)
+        if not path.is_file():
+            log.warning("TEST_REPO_ENV_FILE not found: %s", path)
+            return {}
+        return {k: v for k, v in dotenv_values(path).items() if v}
+
     def _pw_env(self, target_url: str) -> Dict[str, str]:
         env = {
+            **self._test_repo_env(),
             "CI": "1",               # Playwright: no interactive HTML report server, retries per config
             "FORCE_COLOR": "0",
             "NO_COLOR": "1",
@@ -330,13 +343,18 @@ class TestRepository:
             return False
         env = self._pw_env(target_url)
         if self.settings.skip_dependency_install:
-            if not (self.path / "node_modules").is_dir():
-                logs.append("[error] SKIP_DEPENDENCY_INSTALL is set but node_modules is missing.")
-                return False
-            logs.append("[info] Skipping dependency install (SKIP_DEPENDENCY_INSTALL=true); "
-                        "using the existing node_modules.")
-            return True
-        install = run_command([pm, "install"], cwd=self.path, timeout_s=self.settings.pnpm_install_timeout_s, env=env)
+            if (self.path / "node_modules").is_dir():
+                logs.append("[info] Skipping dependency install (SKIP_DEPENDENCY_INSTALL=true); "
+                            "using the existing node_modules.")
+                return True
+            # A clone the agent just made has no node_modules: install once, then later
+            # runs take the skip above.
+            logs.append("[info] node_modules missing - installing once despite SKIP_DEPENDENCY_INSTALL.")
+        # `npm ci` installs exactly the lockfile and never rewrites it, so the agent's
+        # clone stays clean for the next `git checkout` of the base branch.
+        has_npm_lock = pm == "npm" and (self.path / "package-lock.json").is_file()
+        install = run_command([pm, "ci"] if has_npm_lock else [pm, "install"],
+                              cwd=self.path, timeout_s=self.settings.pnpm_install_timeout_s, env=env)
         logs.append(install.as_log())
         if not install.ok:
             logs.append(f"[error] {pm} install failed - tests were not executed.")

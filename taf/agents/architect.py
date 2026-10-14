@@ -10,7 +10,7 @@ from taf.agents.base import agent_node
 from taf.agents.schemas import TestPlan
 from taf.agents.state import QAState
 from taf.config import SETTINGS
-from taf.core.text import truncate_middle
+from taf.integrations.github.pull_requests import diff_for_prompt
 from taf.integrations.jira.xray import build_xray_csv, build_xray_tests_json
 from taf.llm.router import ROUTER
 from taf.skills import skills_prompt
@@ -40,7 +40,7 @@ LOCAL MODEL CONSTRAINTS - these override the preferences above:
 - Omit a test rather than padding the plan."""
 
 
-def build_prompt(state: QAState) -> str:
+def build_prompt(state: QAState, provider: str = "claude") -> str:
     return f"""# Ticket {state['ticket_id']}: {state.get('summary', '')}
 Target URL: {state.get('target_url', '')}
 
@@ -54,7 +54,7 @@ Target URL: {state.get('target_url', '')}
 
 ## Diff (abridged)
 ```diff
-{truncate_middle(state.get('github_diff', ''), SETTINGS.max_diff_chars // 3)}
+{diff_for_prompt(state, 1 / 3, provider)}
 ```"""
 
 
@@ -85,7 +85,7 @@ def test_architect(state: QAState) -> Dict[str, Any]:
     system += skills_prompt("architect", route.provider)
     plan = ROUTER.structured(
         state, route,
-        [SystemMessage(content=system), ROUTER.context_message(route, build_prompt(state))],
+        [SystemMessage(content=system), ROUTER.context_message(route, build_prompt(state, route.provider))],
         TestPlan,
     )
     assert isinstance(plan, TestPlan)

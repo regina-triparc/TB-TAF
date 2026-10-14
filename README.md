@@ -72,10 +72,11 @@ Pick a model, then run the same command without `--provider offline`:
 | an Anthropic API key | `ANTHROPIC_API_KEY=...` (`LLM_PROVIDER=auto` then picks Claude) | `python -m taf run TB-601` |
 | Ollama | nothing (`auto` with no key means Ollama); run `ollama pull qwen2.5-coder:7b` and `ollama serve` | `python -m taf run TB-601` |
 
-To also **execute** the generated spec, point the service at a Playwright project
-on your machine (`TEST_REPO_LOCAL_PATH`, `TEST_SPEC_DIR`; see
-[TypeScript test repository](#typescript-test-repository-playwright)) and use
-`--stage automation` or `--stage full`.
+To also **write, push and run** the generated spec, use `--stage automation` or
+`--stage full`. The spec goes to a `qa/<TICKET>` branch of the private
+[tripbuilder-e2e](https://github.com/regina-triparc/tripbuilder-e2e) repo. You need
+access to that repo and `TEST_REPO_ENV_FILE` set to your UAT test login; see
+[TypeScript test repository](#typescript-test-repository-playwright).
 
 ### The dashboard
 
@@ -89,6 +90,96 @@ selector that switches the LLM provider for new runs. Runs started from the
 terminal appear there too. `uvicorn main:app --host 127.0.0.1 --port 8000` still
 works and is equivalent.
 
+## One command: the seeded ticket to a local test
+
+For someone who has cloned this repo, been sent the `.env` values, and cloned
+[tripbuilder-e2e](https://github.com/regina-triparc/tripbuilder-e2e) next to it
+(as `../tripbuilder-e2e`):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\run-seeded.ps1
+```
+
+```bash
+scripts/run-seeded.sh
+```
+
+The script:
+
+1. creates `.venv` and installs the requirements (again only when they change);
+2. creates `.env` from `.env.example` if it is missing;
+3. runs `doctor`;
+4. runs **TB-601 from the seed file** through every stage;
+5. writes `e2e/qa/TB-601.spec.ts` into your local tripbuilder-e2e clone and runs it.
+
+Nothing is committed or pushed. Discard the spec with
+`git checkout -- e2e/qa/TB-601.spec.ts` in the test repo.
+
+| Option (PowerShell / bash) | Effect |
+|---|---|
+| `-Provider claude` / `--provider claude` | Pick the model; `offline` proves the pipeline but writes no spec. Default: `LLM_PROVIDER` from `.env`. |
+| `-TestRepo C:\code\tripbuilder-e2e` / `--test-repo ...` | Where your tripbuilder-e2e clone is. |
+| `-Stage architect` / `--stage architect` | Stop earlier. Without a tripbuilder-e2e clone the script stops after the test plan anyway. |
+| `-Push` / `--push` | Use the agent's own clone from `.env` and push `qa/TB-601` instead of writing locally. |
+| `-Ticket TB-123` / `--ticket TB-123` | Another seeded ticket. |
+
+The test signs in with `TBA_E2E_EMAIL` / `TBA_E2E_PASSWORD` from the test
+repo's own `.env`.
+
+## Two workflows: real (Jira) and demo (seed)
+
+| | Real flow | Demo flow |
+|---|---|---|
+| Ticket comes from | the Jira API (`JIRA_BASE_URL` / `JIRA_EMAIL` / `JIRA_API_TOKEN`) | `data/seed_tickets.json` (TB-601) |
+| Linked PRs come from | Jira's development panel (GitHub for Jira) | the seed ticket's `pull_requests` |
+| Select it with | `TICKET_SOURCE=jira`, or `--source jira` | `TICKET_SOURCE=seed`, or `--source seed` |
+| Needs | a Jira API token | nothing |
+
+`TICKET_SOURCE=auto`, the default, uses Jira when all three Jira variables are set
+and the seed file otherwise. `--source` on `taf run` / `taf board`, or `"source"`
+in `POST /dashboard/api/start`, overrides it for one call. So
+`python -m taf run TB-601 --source seed` is always the demo, even on a machine
+with Jira configured.
+
+```bash
+python -m taf board --source jira
+```
+
+```bash
+python -m taf run TB-622 --source jira --stage architect
+```
+
+### Where the PR diff comes from
+
+The model never connects to GitHub itself. For each run the service:
+
+1. **finds the PRs.** Jira's development panel lists them (TB-601 → #740 and #764
+   merged, #763 declined). Declined PRs are skipped. A seed ticket lists them in
+   `pull_requests` instead.
+2. **fetches them with git.** The code lives in `TravelEdge/TripArc.TripBuilder`
+   (`SOURCE_REPO_URL`). Fetches go into a blobless bare clone at
+   `SOURCE_REPO_LOCAL_PATH` (about 15 MB, created on the first run), and the diff
+   is computed against each PR's base. git uses your normal GitHub sign-in, so
+   there is no token to manage. **You need read access to TripArc.TripBuilder.**
+   Without it the run continues without a diff, and the triage phase says so.
+3. **condenses the diff per agent.** TB-601's two PRs are about 610,000 characters,
+   mostly backend C#. Each agent gets a version that fits its budget:
+   - every changed file listed with its line counts;
+   - then full hunks for the files most useful for UI tests: frontend templates
+     under `DIFF_FOCUS_PATHS` first (roles, labels, visible text), then
+     components;
+   - lockfiles, docs and images (`DIFF_EXCLUDE_GLOBS`) never shown.
+
+   The budget is `MAX_DIFF_CHARS`, or the smaller `OLLAMA_MAX_DIFF_CHARS` on local
+   routes.
+
+**Local model and real diffs.** A 3B model with a 4,096-token context sees about
+6,000 characters of diff: the overview plus the three most relevant templates.
+That is enough to pick up real labels and button names, not to reason about the
+whole change. For a real ticket, use Claude for triage and automation, or at
+least `CLOUD_AGENTS=automation`. Run local models with 8 GB or more of free RAM;
+below about 2.5 GB free, one call can take an hour and time out.
+
 ## Terminal commands
 
 Run from the project root with the virtualenv active.
@@ -96,19 +187,22 @@ Run from the project root with the virtualenv active.
 | Command | What it does |
 |---|---|
 | `python -m taf doctor` | Checks Python, `.env`, the provider (key set / Ollama reachable), the queue, the test repo, Node and the page contract. Exits 1 on a blocking problem. |
-| `python -m taf board` | Lists the queue: Jira when configured, otherwise `data/seed_tickets.json`. |
+| `python -m taf board [--source jira\|seed]` | Lists the queue: Jira (real) or `data/seed_tickets.json` (demo). |
 | `python -m taf providers` | Shows the router: which provider and model each agent uses. |
 | `python -m taf providers --set ollama --server http://127.0.0.1:8000` | Switches the provider of a **running** service. Not persisted; `LLM_PROVIDER` in `.env` is the startup default. |
 | `python -m taf run TB-601` | Runs triage + architect (default `--stage architect`; no test repo needed). |
 | `python -m taf run TB-601 --stage full --provider claude` | Every stage, on Claude for this run only. Stages: `triage`, `architect`, `automation`, `full`. |
 | `python -m taf run TB-601 --show all` | Also prints execution logs. `--json` prints the whole final state instead. |
+| `python -m taf run TB-622 --source jira` | The real flow: ticket, linked PRs and their diff from Jira and git. `--source seed` forces the demo. |
 | `python -m taf run ABC-1 --summary "..." --description "..."` | A ticket that is in neither Jira nor the seed file. |
+| `scripts/run-seeded.ps1` / `scripts/run-seeded.sh` | Everything above in one go for the seeded ticket - see [One command](#one-command-the-seeded-ticket-to-a-local-test). |
 | `python -m taf skills` | Lists skills and the agents they apply to. |
 | `python -m taf eval --provider ollama` | Scores agent output against `evals/cases`. |
 | `python -m taf serve [--reload]` | Starts the API and the dashboard. |
 | `python -m unittest` | Offline smoke tests. |
 
-To run a generated spec by hand, from inside your Playwright project:
+To run a generated spec by hand, from your own clone of tripbuilder-e2e (after
+`git fetch` and `git checkout qa/TB-601`):
 
 ```bash
 npx playwright test e2e/qa/TB-601.spec.ts --project=qa-agent --reporter=list
@@ -138,6 +232,7 @@ taf/                           the service, as a package
     jira/board.py              Jira queue for the dashboard (falls back to the seed file)
     jira/xray.py               Xray CSV and bulk-import JSON
     github/repository.py       the Playwright test repo: git, install, playwright
+    github/pull_requests.py    PR diffs from the source repo, condensed per agent
     paperclip/control_room.py  Paperclip mirror and budget checks
   skills.py                    loads skills/*/SKILL.md into agent prompts
   runs/
@@ -152,6 +247,7 @@ skills/                        Markdown know-how appended to agent prompts (Play
 evals/                         eval cases, graders and runner
 data/seed_tickets.json         the ticket(s) used when Jira is not configured
 tests/                         offline smoke tests (python -m unittest)
+scripts/run-seeded.ps1, .sh    one command: seeded ticket -> spec in your local tripbuilder-e2e
 docs/                          setup guides (macOS, Windows, Ollama-only) and the demo runbook
 ```
 
@@ -330,71 +426,71 @@ If Ollama is unreachable, the Report Synthesizer falls back to a deterministic r
 
 ### TypeScript test repository (Playwright)
 
-The agent does not create a Playwright project for you. It writes
-`<TICKET>.spec.ts` into one that already exists and then runs it. Point
-`TEST_REPO_LOCAL_PATH` at that project. **This is a path on your own machine —
-it is not a value anyone can send you**, and it is the one setting every new
-install has to fill in.
+Generated tests live in their own private repository,
+**[regina-triparc/tripbuilder-e2e](https://github.com/regina-triparc/tripbuilder-e2e)**,
+next to the hand-written TripBuilder suite. Nothing generated is ever written
+into this repo. Ask for access to tripbuilder-e2e if you will run the
+automation stage.
 
-There are two modes. Pick one.
+With the defaults in `.env.example` the agent keeps **its own clone** of that
+repo in a folder next to this one (`TEST_REPO_LOCAL_PATH=../tripbuilder-e2e-agent`).
+For every ticket it:
 
-**Mode A — in place (`TEST_REPO_NO_GIT=true`).** The recommended mode, and how
-this project is normally run. Point `TEST_REPO_LOCAL_PATH` at a Playwright
-working copy you already have checked out. The agent performs **no git
-operations at all**: no fetch, no checkout, no branch, no commit, no push. It
-writes the spec file and runs Playwright, so the branch you are on and any
-uncommitted work are never touched. `TEST_REPO_URL` and `GITHUB_TOKEN` stay
-empty — they are not read in this mode.
+1. clones the repo on the first run, and installs packages with `npm ci`;
+2. checks out `main` and pulls;
+3. creates or resets the branch `qa/<TICKET>`;
+4. writes `e2e/qa/<TICKET>.spec.ts`, and repairs it until Playwright can load it;
+5. commits and pushes `qa/<TICKET>` to GitHub;
+6. runs it with `--project=qa-agent`.
+
+A person then opens a pull request from `qa/<TICKET>` into `main`, reviews the
+spec and merges it. A failing generated test is either a guessed selector (fix
+the spec) or a real finding (report it on the ticket).
+
+Never work in the agent's clone yourself: it switches and resets branches there.
+For your own edits, clone tripbuilder-e2e a second time; its README covers that
+setup.
+
+**One-time setup on a new machine**
+
+- **Repo access.** git pushes with your normal GitHub sign-in (Git Credential
+  Manager on Windows and macOS), so `GITHUB_TOKEN` usually stays empty. If a push
+  is rejected, create a fine-grained PAT with **Contents: Read and write** on
+  tripbuilder-e2e only. The service sends it per command as an HTTP header
+  through git's environment config, so it never appears in the remote URL,
+  `.git/config`, the process list or logs.
+- **Test login.** Generated specs sign in to UAT through tripbuilder-e2e's
+  `setup` project, which needs `TBA_E2E_EMAIL` / `TBA_E2E_PASSWORD`. Set
+  `TEST_REPO_ENV_FILE` to a `.env` that holds them (for example your own working
+  copy's `../tripbuilder-e2e/.env`). They are passed to Playwright as environment
+  variables, so no secrets file is copied into the agent's clone.
+- `python -m taf doctor` checks both, and whether the clone exists yet.
 
 ```ini
-TEST_REPO_LOCAL_PATH=C:/code/TripArc.TripBuilder/apps/search-e2e
-TEST_REPO_NO_GIT=true
+TEST_REPO_URL=https://github.com/regina-triparc/tripbuilder-e2e.git
+TEST_REPO_LOCAL_PATH=../tripbuilder-e2e-agent
+TEST_REPO_NO_GIT=false
+TEST_REPO_BASE_BRANCH=main
 TEST_SPEC_DIR=e2e/qa
-GIT_PUSH_ENABLED=false
+GIT_PUSH_ENABLED=true
+TEST_REPO_ENV_FILE=../tripbuilder-e2e/.env
 PACKAGE_MANAGER=npm
 SKIP_DEPENDENCY_INSTALL=true
 PLAYWRIGHT_EXTRA_ARGS=--reporter=line --project=qa-agent
 ```
 
-**Mode B — managed clone (`TEST_REPO_NO_GIT=false`).** Give `TEST_REPO_URL` and
-`GITHUB_TOKEN`; the agent clones into `TEST_REPO_LOCAL_PATH` if it is missing,
-branches from `TEST_REPO_BASE_BRANCH`, commits, and pushes when
-`GIT_PUSH_ENABLED=true`. `TEST_REPO_LOCAL_PATH` must then be a **dedicated**
-directory the agent owns — never a clone you work in, because it checks out
-branches there.
+**Other Playwright projects.** The framework is not tied to TripBuilder. Point
+`TEST_REPO_URL` at any Playwright repo that has:
 
-Either way, the test project needs:
+- `@playwright/test` and a committed lockfile, with `PACKAGE_MANAGER` matching it;
+- a `TEST_SPEC_DIR` folder covered by `testDir`/`testMatch` in
+  `playwright.config.ts`, or Playwright reports `0 tests`;
+- a config that reads the base URL from the environment
+  (`use: { baseURL: process.env.BASE_URL }`).
 
-- `@playwright/test` in `devDependencies` and a committed lockfile. Set
-  `PACKAGE_MANAGER` to match that lockfile: a project with only
-  `package-lock.json` must be driven by `npm`, not `pnpm`, or the dependency tree
-  is re-resolved. Set `SKIP_DEPENDENCY_INSTALL=true` when `node_modules` is
-  already installed and human-managed.
-- The directory named by `TEST_SPEC_DIR` (relative to the project root) must
-  exist and be covered by `testDir`/`testMatch` in `playwright.config.ts`, or
-  Playwright reports `0 tests`.
-- A `playwright.config.ts` that reads the base URL from the environment:
-  ```ts
-  import { defineConfig } from '@playwright/test';
-  export default defineConfig({
-    testDir: './tests',
-    use: { baseURL: process.env.BASE_URL, trace: 'retain-on-failure' },
-    retries: process.env.CI ? 1 : 0,
-  });
-  ```
-- Browsers installed once on the machine, or `PLAYWRIGHT_INSTALL_BROWSERS=true`
-  to install them on every run.
-  ```bash
-  npx playwright install chromium
-  ```
-- If the project uses a dedicated Playwright project (for example `qa-agent`) or
-  a signed-in `storageState`, put the selecting flags in `PLAYWRIGHT_EXTRA_ARGS`
-  and make sure the auth setup has been run at least once.
-
-In Mode B, `GITHUB_TOKEN` should be a fine-grained PAT scoped only to the test
-repo with **Contents: Read and write**. The service injects it per command as an
-HTTP auth header through git's environment config, so it never appears in the
-remote URL, in `.git/config`, in the process list or in logs.
+To write into an existing checkout with **no** git operations at all, set
+`TEST_REPO_NO_GIT=true` and point `TEST_REPO_LOCAL_PATH` at it. The spec is
+then left uncommitted for you, and nothing is pushed.
 
 ### Page contract (optional but recommended)
 
@@ -422,10 +518,11 @@ the Trip Builder portal and doubles as a format example.
 | `OLLAMA_BASE_URL` | `http://localhost:11434/v1` | Ollama's OpenAI-compatible endpoint. |
 | `OLLAMA_MODEL` | `qwen2.5-coder:7b` | Local model used by Agent 4. |
 | `OLLAMA_TIMEOUT_SECONDS` | `300` | Timeout for each Ollama request. |
-| `TEST_REPO_LOCAL_PATH` | – | **Required.** Absolute path of the Playwright project on *this* machine. |
-| `TEST_REPO_NO_GIT` | `true` in `.env.example` | `true` = Mode A: write the spec and run it in place, no git operations. `false` = Mode B: clone/branch/commit. |
-| `GITHUB_TOKEN` | – | Mode B only. PAT used to push `qa/*` branches. |
-| `TEST_REPO_URL` | – | Mode B only. HTTPS clone URL of the Playwright repo. |
+| `TEST_REPO_LOCAL_PATH` | `../tripbuilder-e2e-agent` in `.env.example` | The agent's own clone of the test repo (relative = from this project's root). Cloned on first use. |
+| `TEST_REPO_NO_GIT` | `false` in `.env.example` | `false` = the agent's own clone: branch, commit, push. `true` = write and run the spec in place in an existing checkout, no git operations. |
+| `GITHUB_TOKEN` | – | Only if your git sign-in cannot push: PAT used to push `qa/*` branches. |
+| `TEST_REPO_ENV_FILE` | – | `.env` whose variables (the UAT test login) are passed to Playwright. |
+| `TEST_REPO_URL` | tripbuilder-e2e in `.env.example` | HTTPS clone URL of the Playwright repo the agent pushes `qa/*` branches to. |
 | `TEST_REPO_BASE_BRANCH` | `main` | Branch that QA branches are created from. |
 | `TEST_SPEC_DIR` | `tests/qa` | Where spec files are written, relative to the repo root. |
 | `GIT_PUSH_ENABLED` | `true` | Set to `false` to commit locally only (useful for dry runs). |
@@ -459,6 +556,12 @@ the Trip Builder portal and doubles as a format example.
 | `DASHBOARD_TARGET_URL` | – | Target URL used by runs started from the dashboard buttons. |
 | `JIRA_BASE_URL` / `JIRA_EMAIL` / `JIRA_API_TOKEN` | – | Set all three to make the board poll Jira. With any of them missing it reads `SEED_TICKETS_PATH`. |
 | `SEED_TICKETS_PATH` | `data/seed_tickets.json` | Offline queue; ships with TB-601. |
+| `TICKET_SOURCE` | `auto` | `jira` (real flow), `seed` (demo) or `auto` (Jira when configured). |
+| `SOURCE_REPO_URL` | TripArc.TripBuilder in `.env.example` | Repo the PR diffs are read from, with git. Empty = no diffs. |
+| `SOURCE_REPO_LOCAL_PATH` / `SOURCE_BASE_BRANCH` | `../tripbuilder-src.git` / `develop` | Blobless bare clone used for diffs; base branch of the PRs. |
+| `FETCH_PR_DIFFS` | `true` | Set `false` to run without diffs. |
+| `DIFF_FOCUS_PATHS` / `DIFF_EXCLUDE_GLOBS` | `apps/` / lockfiles, docs, images | How a large diff is ranked and filtered before prompting. |
+| `OLLAMA_MAX_DIFF_CHARS` | `6000` | Diff budget on local-model routes (`MAX_DIFF_CHARS` applies to Claude). |
 | `SKILLS_ENABLED` / `SKILLS_ON_LOCAL` / `SKILLS_MAX_CHARS` / `SKILLS_DIR` | `true` / `false` / `12000` / `skills` | See [skills/README.md](skills/README.md). |
 | `JIRA_JQL` | see `.env.example` | Which tickets the board shows. |
 | `JIRA_POLL_SECONDS` / `JIRA_TIMEOUT_SECONDS` | `60` / `20` | Jira poll interval and request timeout. |

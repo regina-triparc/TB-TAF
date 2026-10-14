@@ -20,6 +20,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from taf.agents.graph import NODES
 from taf.config import SETTINGS
+from taf.integrations.github.pull_requests import PullRequest, fetch_ticket_diff
 from taf.integrations.jira.board import get_board
 from taf.llm.router import ROUTER
 from taf.runs.store import get_store
@@ -45,15 +46,29 @@ class StageError(ValueError):
 
 
 def build_state(run_id: str, ticket_id: str, summary: str = "", description: str = "",
-                target_url: str = "", provider: str = "") -> Dict[str, Any]:
-    """Initial pipeline state, filled from Jira (or the seed file) where not given explicitly."""
-    issue = get_board().issue(ticket_id)
+                target_url: str = "", provider: str = "", source: str = "") -> Dict[str, Any]:
+    """
+    Initial pipeline state, filled from the ticket source (Jira or the seed file)
+    where not given explicitly. The PR diff is NOT fetched here - that takes
+    seconds to minutes and happens on the run's own thread (see `execute`).
+    """
+    board = get_board()
+    try:
+        resolved = board.resolve_source(source)
+    except ValueError as exc:
+        raise StageError(str(exc)) from exc
+    if resolved == "jira" and not board.config.configured:
+        raise StageError(f"TICKET_SOURCE is jira but {board.config.missing} is not set in .env")
+    issue = board.issue(ticket_id, resolved)
+    prs = []
     if issue:
         summary = summary or issue.get("summary", "")
         description = description or issue.get("description", "")
+        prs = issue.get("pull_requests") or []
     if not summary:
-        raise StageError(f"No summary for {ticket_id}. It is not in Jira or the seed file "
-                         f"({SETTINGS.seed_tickets_path}); configure Jira or pass a summary explicitly.")
+        where = "Jira" if resolved == "jira" else f"the seed file ({SETTINGS.seed_tickets_path})"
+        raise StageError(f"No summary for {ticket_id}: not found in {where}. "
+                         f"Pass --summary/--description, or use --source {'seed' if resolved == 'jira' else 'jira'}.")
     state: Dict[str, Any] = {
         "run_id": run_id,
         "ticket_id": ticket_id,
@@ -66,7 +81,23 @@ def build_state(run_id: str, ticket_id: str, summary: str = "", description: str
     }
     # Frozen for the whole run: switching the default mid-run affects the next run only.
     state["llm_provider"] = provider or ROUTER.default_provider
+    state["ticket_source"] = resolved
+    state["pull_requests"] = [{"number": p.number, "repo": p.repo, "status": p.status, "url": p.url} for p in prs]
     return state
+
+
+def gather_diff(state: Dict[str, Any]) -> List[str]:
+    """Fetch the ticket's PR diff into state['github_diff'] (unless one was given). Returns log notes."""
+    if state.get("github_diff"):
+        return ["PR diff: provided with the request"]
+    prs = [PullRequest(**p) for p in state.get("pull_requests") or []]
+    if not prs:
+        return ["PR diff: no linked PRs found for this ticket - running without a diff"]
+    diff, notes = fetch_ticket_diff(prs)
+    state["github_diff"] = diff
+    if diff:
+        notes.append(f"PR diff: {len(diff):,} characters; condensed per agent before prompting")
+    return notes
 
 
 def prepare(ticket_id: str, stage: str, **overrides: str) -> Dict[str, Any]:
@@ -98,6 +129,9 @@ def execute(state: Dict[str, Any], stage: str,
     failed_at = ""
 
     try:
+        notify("context", "running", "")
+        state["context_notes"] = gather_diff(state)
+        notify("context", "ok", "; ".join(state["context_notes"]))
         for name in STAGE_NODES[stage]:
             if cancel.is_set():
                 store.finish_run(run_id, "cancelled", error=f"cancelled before {name}")
@@ -175,6 +209,9 @@ def phase_artifact(name: str, state: Dict[str, Any]) -> Optional[Dict[str, Any]]
             "risks": t.get("risks") or [],
             "impacted_areas": t.get("impacted_areas") or [],
             "gaps_and_questions": t.get("gaps_and_questions") or [],
+            "ticket_source": state.get("ticket_source"),
+            "pull_requests": state.get("pull_requests") or [],
+            "context_notes": state.get("context_notes") or [],
         }
     if name == "architect":
         cases = state.get("test_cases") or []
@@ -218,8 +255,10 @@ def phase_detail(name: str, state: Dict[str, Any], elapsed_s: int) -> str:
     """One short human-readable line per finished phase, shown on the board."""
     if name == "triage":
         t = state.get("triage_analysis") or {}
+        prs = ", ".join(f"#{p['number']}" for p in state.get("pull_requests") or []) or "no PRs"
+        diff = "diff" if state.get("github_diff") else "no diff"
         return (f"{elapsed_s}s - risk {t.get('risk_level', '?')}, "
-                f"{len(t.get('acceptance_criteria') or [])} criteria")
+                f"{len(t.get('acceptance_criteria') or [])} criteria ({state.get('ticket_source', '?')}; {prs}; {diff})")
     if name == "architect":
         cases = state.get("test_cases") or []
         auto = sum(1 for c in cases if c.get("automatable"))

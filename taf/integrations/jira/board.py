@@ -21,7 +21,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import requests
 
-from taf.config import SETTINGS, project_path
+from taf.config import SETTINGS, TICKET_SOURCES, project_path
+from taf.integrations.github.pull_requests import PullRequest, prs_from_seed, prs_from_text, repo_slug
 
 LOG = logging.getLogger("qa.jira")
 
@@ -105,22 +106,35 @@ class JiraBoard:
     def _auth(self) -> Tuple[str, str]:
         return (self.config.email, self.config.token)
 
-    def tickets(self, force: bool = False) -> Dict[str, Any]:
+    def resolve_source(self, source: Optional[str] = None) -> str:
+        """'jira' or 'seed' for this call: an explicit source, else TICKET_SOURCE; auto picks by credentials."""
+        chosen = (source or SETTINGS.ticket_source or "auto").lower()
+        if chosen not in TICKET_SOURCES:
+            raise ValueError(f"ticket source must be one of {', '.join(TICKET_SOURCES)}")
+        if chosen == "auto":
+            return "jira" if self.config.configured else "seed"
+        return chosen
+
+    def tickets(self, force: bool = False, source: Optional[str] = None) -> Dict[str, Any]:
         """Cached queue. Always returns a dict; never raises."""
         cfg = self.config
-        if not cfg.configured:
+        resolved = self.resolve_source(source)
+        if resolved == "seed" or not cfg.configured:
             seeded = _seed_tickets()
-            reason = f"Jira not configured - set {cfg.missing} in .env"
-            if seeded:
-                reason += f" (showing {len(seeded)} ticket(s) from {_SEED_PATH.name})"
+            if resolved == "seed" and cfg.configured:
+                reason = f"Demo mode (TICKET_SOURCE=seed): {len(seeded)} ticket(s) from {_SEED_PATH.name}"
+            else:
+                reason = f"Jira not configured - set {cfg.missing} in .env"
+                if seeded:
+                    reason += f" (showing {len(seeded)} ticket(s) from {_SEED_PATH.name})"
             return {"tickets": seeded, "fetched_at": None, "configured": False,
-                    "reason": reason}
+                    "reason": reason, "source": "seed"}
 
         with self._lock:
             fresh = (time.time() - self._fetched_at) < cfg.poll_seconds
             if fresh and not force and self._fetched_at:
                 return {"tickets": list(self._cache), "fetched_at": self._fetched_at,
-                        "configured": True, "reason": self._reason}
+                        "configured": True, "reason": self._reason, "source": "jira"}
 
         try:
             resp = requests.get(
@@ -136,7 +150,7 @@ class JiraBoard:
                 with self._lock:
                     self._reason = reason
                     return {"tickets": list(self._cache), "fetched_at": self._fetched_at or None,
-                            "configured": True, "reason": reason}
+                            "configured": True, "reason": reason, "source": "jira"}
             issues = resp.json().get("issues", [])
             simplified = [_simplify(i, cfg.base_url) for i in issues]
             with self._lock:
@@ -144,20 +158,33 @@ class JiraBoard:
                 self._fetched_at = time.time()
                 self._reason = ""
             return {"tickets": simplified, "fetched_at": self._fetched_at,
-                    "configured": True, "reason": ""}
+                    "configured": True, "reason": "", "source": "jira"}
         except requests.RequestException as exc:
             reason = f"Jira unreachable: {exc}"
             LOG.warning(reason)
             with self._lock:
                 self._reason = reason
                 return {"tickets": list(self._cache), "fetched_at": self._fetched_at or None,
-                        "configured": True, "reason": reason}
+                        "configured": True, "reason": reason, "source": "jira"}
 
-    def issue(self, key: str) -> Optional[Dict[str, Any]]:
-        """Full issue (including description) for a pipeline run. None on failure."""
+    def issue(self, key: str, source: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """
+        Full issue for a pipeline run, including `description` and `pull_requests`
+        (list of PullRequest). None when the ticket cannot be found in the source.
+        """
         cfg = self.config
+        if self.resolve_source(source) == "seed":
+            ticket = next((t for t in _seed_tickets() if t.get("key") == key), None)
+            if ticket is None:
+                return None
+            ticket = dict(ticket)
+            default_repo = repo_slug(SETTINGS.source_repo_url)
+            prs = prs_from_seed(ticket.get("pull_requests") or [], default_repo)
+            ticket["pull_requests"] = prs or prs_from_text(ticket.get("description", ""))
+            return ticket
         if not cfg.configured:
-            return next((t for t in _seed_tickets() if t.get("key") == key), None)
+            LOG.warning("TICKET_SOURCE=jira but %s is not set", cfg.missing)
+            return None
         try:
             resp = requests.get(
                 f"{cfg.base_url}/rest/api/3/issue/{key}",
@@ -172,10 +199,44 @@ class JiraBoard:
             data = resp.json()
             out = _simplify(data, cfg.base_url)
             out["description"] = adf_to_text((data.get("fields") or {}).get("description"))
+            out["pull_requests"] = self.pull_requests(data.get("id", "")) or prs_from_text(out["description"])
             return out
         except requests.RequestException as exc:
             LOG.warning("Jira issue %s unreachable: %s", key, exc)
             return None
+
+
+    def pull_requests(self, issue_id: str) -> List[PullRequest]:
+        """
+        PRs linked to an issue in Jira's development panel (GitHub for Jira app).
+        The detail endpoint only answers for the exact integration type, which the
+        summary endpoint names, so ask the summary first. Empty list on any failure.
+        """
+        cfg = self.config
+        if not issue_id:
+            return []
+        base, auth = f"{cfg.base_url}/rest/dev-status/latest/issue", self._auth()
+        try:
+            summary = requests.get(f"{base}/summary", params={"issueId": issue_id}, auth=auth, timeout=cfg.timeout)
+            kinds = list(((summary.json().get("summary") or {}).get("pullrequest") or {})
+                         .get("byInstanceType", {}).keys()) if summary.ok else []
+            prs: List[PullRequest] = []
+            for kind in kinds:
+                detail = requests.get(f"{base}/detail", auth=auth, timeout=cfg.timeout,
+                                      params={"issueId": issue_id, "applicationType": kind, "dataType": "pullrequest"})
+                if not detail.ok:
+                    continue
+                for block in detail.json().get("detail") or []:
+                    for pr in block.get("pullRequests") or []:
+                        url = pr.get("url", "")
+                        found = prs_from_text(url)
+                        if found:
+                            prs.append(PullRequest(number=found[0].number, repo=found[0].repo,
+                                                   status=str(pr.get("status", "")), url=url))
+            return prs
+        except (requests.RequestException, ValueError) as exc:
+            LOG.warning("Jira development panel unavailable for issue %s: %s", issue_id, exc)
+            return []
 
 
 def adf_to_text(node: Any) -> str:

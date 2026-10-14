@@ -7,11 +7,13 @@ TB-601. That is how every run in this project has been demonstrated so far.
 > **Don't use bare `curl` in PowerShell** — it is an alias for `Invoke-WebRequest`
 > and takes different arguments. Use `Invoke-RestMethod`, as below.
 
-Paths below are the ones from the machine this demo was recorded on
-(`C:\Users\r.abduraxmanova\Documents\localTaf\TAF` for this repo and
-`C:\Users\r.abduraxmanova\Documents\taf-tb\TripArc.TripBuilder\apps\search-e2e` for the
-Playwright project). **Substitute your own** — the second one is whatever you set
-as `TEST_REPO_LOCAL_PATH` in `.env`. See the README for how to choose it.
+Paths below are the ones from the machine this demo was recorded on:
+`C:\Users\r.abduraxmanova\Documents\localTaf\TAF` for this repo, and
+`C:\Users\r.abduraxmanova\Documents\tripbuilder-e2e` for a working copy of the
+[tripbuilder-e2e](https://github.com/regina-triparc/tripbuilder-e2e) test repo.
+**Substitute your own.** The agent itself writes into its own clone
+(`TEST_REPO_LOCAL_PATH`, default `../tripbuilder-e2e-agent`) and pushes a
+`qa/<TICKET>` branch; see the README.
 
 ---
 
@@ -154,11 +156,16 @@ extracted criteria, the test plan and the generated spec.
 ## 7. Run the generated test directly
 
 This is the part that proves it works end to end. Requires
-`TBA_E2E_EMAIL` / `TBA_E2E_PASSWORD` in `apps/search-e2e/.env` — the `setup`
-project signs in and writes `storageState`.
+`TBA_E2E_EMAIL` / `TBA_E2E_PASSWORD` in the test repo's `.env` — the `setup`
+project signs in and writes `storageState`. Fetch the branch the agent pushed,
+then run it from your working copy:
 
 ```powershell
-cd C:\Users\r.abduraxmanova\Documents\taf-tb\TripArc.TripBuilder\apps\search-e2e; $env:CI="1"; npx playwright test e2e/qa/TB-601.spec.ts --project=qa-agent --reporter=list
+cd C:\Users\r.abduraxmanova\Documents\tripbuilder-e2e; git fetch origin; git checkout qa/TB-601
+```
+
+```powershell
+$env:CI="1"; npx playwright test e2e/qa/TB-601.spec.ts --project=qa-agent --reporter=list
 ```
 
 Expected today: **TC-001 passes**, TC-002 fails (it invents edit-form selectors

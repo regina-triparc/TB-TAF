@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import sys
 from typing import Any, Dict, List, Optional
@@ -75,14 +76,34 @@ def cmd_doctor(_args: argparse.Namespace) -> int:
           f"Queue empty - {jira['reason'] or 'no tickets'}", fatal=False)
 
     if SETTINGS.test_repo_local_path:
-        repo = project_path(SETTINGS.test_repo_local_path)
-        check(repo.is_dir(), f"TEST_REPO_LOCAL_PATH exists: {repo}",
-              f"TEST_REPO_LOCAL_PATH does not exist: {repo}", fatal=False)
+        repo = project_path(SETTINGS.test_repo_local_path).resolve()
+        managed = not SETTINGS.no_git
+        if managed:
+            _out("info", f"Test repo: managed clone of {SETTINGS.test_repo_url or '(TEST_REPO_URL not set)'} "
+                         f"at {repo}; pushes qa/<TICKET> branches: {'yes' if SETTINGS.git_push_enabled else 'no'}")
+            if SETTINGS.test_repo_url and shutil.which("git"):
+                import subprocess
+                env = {**os.environ, "GIT_TERMINAL_PROMPT": "0", "GCM_INTERACTIVE": "never"}
+                probe = subprocess.run(["git", "ls-remote", "--heads", SETTINGS.test_repo_url],
+                                       capture_output=True, text=True, timeout=30, env=env)
+                check(probe.returncode == 0, "test repo reachable with your git credentials",
+                      "cannot read TEST_REPO_URL - ask for access to the repo, sign in to GitHub "
+                      "with git once, or set GITHUB_TOKEN", fatal=False)
+            if not repo.is_dir():
+                _out("info", "agent clone not created yet - the first automation run clones it and runs npm ci")
+        else:
+            check(repo.is_dir(), f"TEST_REPO_LOCAL_PATH exists: {repo}",
+                  f"TEST_REPO_LOCAL_PATH does not exist: {repo}", fatal=False)
         if repo.is_dir():
             check((repo / SETTINGS.test_spec_dir).is_dir(), f"TEST_SPEC_DIR exists: {SETTINGS.test_spec_dir}",
                   f"TEST_SPEC_DIR missing in the test repo: {SETTINGS.test_spec_dir}", fatal=False)
             check((repo / "node_modules").is_dir(), "test repo has node_modules",
-                  "test repo has no node_modules - run `npm ci` there", fatal=False)
+                  "test repo has no node_modules - the next automation run installs them", fatal=False)
+        env_file = project_path(SETTINGS.test_repo_env_file) if SETTINGS.test_repo_env_file else None
+        check(bool(env_file and env_file.is_file()) or (repo / ".env").is_file(),
+              f"test login available ({'TEST_REPO_ENV_FILE' if env_file and env_file.is_file() else 'test repo .env'})",
+              "no test login: set TEST_REPO_ENV_FILE to a .env with TBA_E2E_EMAIL / TBA_E2E_PASSWORD "
+              "(or put one in the test repo) - generated specs cannot sign in without it", fatal=False)
     else:
         _out("warn", "TEST_REPO_LOCAL_PATH not set - triage/architect stages work, automation will not")
     for tool in ("node", "npx", "git"):
@@ -145,10 +166,10 @@ def _print_routing(info: Dict[str, Any]) -> None:
 
 
 # ------------------------------------------------------------------- board --
-def cmd_board(_args: argparse.Namespace) -> int:
+def cmd_board(args: argparse.Namespace) -> int:
     from taf.integrations.jira.board import get_board
-    jira = get_board().tickets()
-    print(f"source: {'Jira' if jira['configured'] else 'seed file'}"
+    jira = get_board().tickets(source=args.source)
+    print(f"source: {'Jira' if jira['source'] == 'jira' else 'seed file'}"
           + (f"  ({jira['reason']})" if jira["reason"] else ""))
     for t in jira["tickets"]:
         print(f"  {t.get('key', ''):<10} {t.get('status', ''):<14} {t.get('summary', '')}")
@@ -176,13 +197,16 @@ def cmd_run(args: argparse.Namespace) -> int:
         ROUTER.resolve(args.provider or None)
         state = stages.prepare(args.ticket, args.stage, summary=args.summary or "",
                                description=args.description or "", target_url=args.target_url or "",
-                               provider=args.provider or "")
+                               provider=args.provider or "", source=args.source or "")
     except (stages.StageError, ValueError) as exc:
         _out("fail", str(exc))
         return 2
 
     routing = ROUTER.describe(args.provider or None)
-    print(f"run {state['run_id']}  ticket {args.ticket}  stage {args.stage}  provider {routing['resolved']}")
+    print(f"run {state['run_id']}  ticket {args.ticket} ({state['ticket_source']})  "
+          f"stage {args.stage}  provider {routing['resolved']}")
+    prs = ", ".join(f"#{p['number']} {p['status'].lower()}".strip() for p in state["pull_requests"])
+    print(f"linked PRs: {prs or 'none found'}")
     print(f"target: {state['target_url'] or '(none - set DASHBOARD_TARGET_URL or --target-url)'}\n")
 
     def on_phase(name: str, status: str, detail: str) -> None:
@@ -253,7 +277,7 @@ def cmd_serve(args: argparse.Namespace) -> int:
 
 # -------------------------------------------------------------------- main --
 def build_parser() -> argparse.ArgumentParser:
-    from taf.config import LLM_PROVIDERS
+    from taf.config import LLM_PROVIDERS, TICKET_SOURCES
 
     parser = argparse.ArgumentParser(prog="python -m taf", description="Autonomous QA framework - terminal interface.")
     parser.add_argument("-v", "--verbose", action="store_true", help="show INFO logs (agent events)")
@@ -266,7 +290,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--server", help="apply to a running service, e.g. http://127.0.0.1:8000")
     p.set_defaults(fn=cmd_providers)
 
-    sub.add_parser("board", help="list the ticket queue").set_defaults(fn=cmd_board)
+    p = sub.add_parser("board", help="list the ticket queue")
+    p.add_argument("--source", choices=TICKET_SOURCES, help="jira (real) or seed (demo); default TICKET_SOURCE")
+    p.set_defaults(fn=cmd_board)
     sub.add_parser("skills", help="list skills").set_defaults(fn=cmd_skills)
 
     p = sub.add_parser("run", help="run pipeline stages for one ticket")
@@ -274,6 +300,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--stage", default="architect", choices=["triage", "architect", "automation", "full"],
                    help="how far to go (default: architect - no test repo needed)")
     p.add_argument("--provider", choices=LLM_PROVIDERS, help="router override for this run only")
+    p.add_argument("--source", choices=TICKET_SOURCES,
+                   help="where the ticket comes from: jira (real flow) or seed (demo); default TICKET_SOURCE")
     p.add_argument("--target-url", help="app under test (default: DASHBOARD_TARGET_URL)")
     p.add_argument("--summary", help="ticket summary, when the ticket is not in Jira or the seed file")
     p.add_argument("--description", help="ticket description / acceptance criteria")

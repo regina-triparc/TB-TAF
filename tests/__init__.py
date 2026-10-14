@@ -23,6 +23,9 @@ os.environ.update({
     "QA_SERVICE_API_KEY": "",
     "TEST_REPO_LOCAL_PATH": "",
     "SEED_TICKETS_PATH": "data/seed_tickets.json",
+    "TICKET_SOURCE": "seed",
+    "SOURCE_REPO_URL": "",          # no git/network: PR diffs are skipped with a note
+    "TEST_REPO_ENV_FILE": "",
     "QA_DB_PATH": os.path.join(_TMP, "qa_runs.db"),
     "SKILLS_ENABLED": "true",
     "SKILLS_ON_LOCAL": "false",

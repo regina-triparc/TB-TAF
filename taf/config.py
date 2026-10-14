@@ -120,6 +120,9 @@ class Settings:
     git_timeout_s: int = field(default_factory=lambda: env_int("GIT_TIMEOUT_SECONDS", 120))
     # Write the spec and run it IN PLACE: no fetch, no branch, no commit, no push.
     no_git: bool = field(default_factory=lambda: env_bool("TEST_REPO_NO_GIT", False))
+    # Optional .env-style file whose variables are passed to Playwright (e.g. the test
+    # login). Lets the agent's own clone run without a copy of anyone's secrets in it.
+    test_repo_env_file: str = field(default_factory=lambda: env_str("TEST_REPO_ENV_FILE"))
 
     # --- Package manager / Playwright execution -----------------------------
     pnpm_install_timeout_s: int = field(default_factory=lambda: env_int("PNPM_INSTALL_TIMEOUT_SECONDS", 600))
@@ -145,6 +148,29 @@ class Settings:
     xray_requirement_link_type: str = field(default_factory=lambda: env_str("XRAY_REQUIREMENT_LINK_TYPE", "Test"))
     xray_include_priority: bool = field(default_factory=lambda: env_bool("XRAY_INCLUDE_PRIORITY", False))
 
+    # --- Ticket source ------------------------------------------------------
+    # jira = the real flow: tickets and their linked PRs come from the Jira API.
+    # seed = demo flow: data/seed_tickets.json, works with no credentials.
+    # auto = jira when JIRA_BASE_URL / JIRA_EMAIL / JIRA_API_TOKEN are all set, else seed.
+    ticket_source: str = field(default_factory=lambda: env_str("TICKET_SOURCE", "auto").lower())
+
+    # --- Source repository (where the PR diffs come from) -------------------
+    # PR numbers come from Jira's development panel (or `pull_requests` in a seed
+    # ticket); the diffs are read with git from a blobless bare clone kept at
+    # SOURCE_REPO_LOCAL_PATH, using your normal git sign-in. No GitHub token needed.
+    source_repo_url: str = field(default_factory=lambda: env_str("SOURCE_REPO_URL"))
+    source_repo_local_path: str = field(default_factory=lambda: env_str("SOURCE_REPO_LOCAL_PATH", "../tripbuilder-src.git"))
+    source_base_branch: str = field(default_factory=lambda: env_str("SOURCE_BASE_BRANCH", "develop"))
+    fetch_pr_diffs: bool = field(default_factory=lambda: env_bool("FETCH_PR_DIFFS", True))
+    # Ranking of a large diff before it reaches a model: files under these path
+    # prefixes come first; files matching the exclude globs are listed but never shown.
+    diff_focus_paths: str = field(default_factory=lambda: env_str("DIFF_FOCUS_PATHS", "apps/"))
+    diff_exclude_globs: str = field(default_factory=lambda: env_str(
+        "DIFF_EXCLUDE_GLOBS",
+        "*.lock,*package-lock.json,*pnpm-lock.yaml,*.md,*.snap,*.svg,*.png,*.jpg,*.jpeg,*.gif,*.ico,*.min.js,*.map"))
+    # Local models get a smaller diff budget than MAX_DIFF_CHARS (a 4k context fills fast).
+    ollama_max_diff_chars: int = field(default_factory=lambda: env_int("OLLAMA_MAX_DIFF_CHARS", 6000))
+
     # --- Dashboard / run history / seed -------------------------------------
     qa_db_path: str = field(default_factory=lambda: env_str("QA_DB_PATH", "qa_runs.db"))
     dashboard_target_url: str = field(default_factory=lambda: env_str("DASHBOARD_TARGET_URL"))
@@ -168,9 +194,13 @@ class Settings:
         return [s for s in candidates if s and len(s) >= 8]
 
 
+TICKET_SOURCES = ("auto", "jira", "seed")
+
 SETTINGS = Settings()
 if SETTINGS.llm_provider not in LLM_PROVIDERS:
     raise SystemExit(f"LLM_PROVIDER must be one of {', '.join(LLM_PROVIDERS)}; got {SETTINGS.llm_provider!r}")
+if SETTINGS.ticket_source not in TICKET_SOURCES:
+    raise SystemExit(f"TICKET_SOURCE must be one of {', '.join(TICKET_SOURCES)}; got {SETTINGS.ticket_source!r}")
 
 
 # =============================================================================
