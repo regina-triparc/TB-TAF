@@ -1,5 +1,7 @@
 # Setup Guide — Ollama only (no Claude / no Anthropic key)
 
+> **Optional hosted stack.** This guide sets up the full stack with n8n and Paperclip, which local runs do not use. To run the demo or use the service locally (dashboard, scripts, CLI), follow [DEMO.md](DEMO.md) and the main [README](../README.md) instead. Paths and commands in this guide may predate the `taf` package; where they differ, the README is current.
+
 Runs the **whole** QA pipeline on local Ollama models: every agent (triage, test design, Playwright code, report) uses Ollama. There is no Anthropic account, no API key and no cloud cost.
 
 This is an **overlay** on the normal guides. Follow [SETUP-windows.md](SETUP-windows.md) (or [SETUP.md](SETUP.md) on macOS) phase by phase, and apply the changes below where they say so. Everything that isn't mentioned (Playwright repo, Paperclip, n8n, Jira, Xray) is identical.

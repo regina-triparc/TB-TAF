@@ -1,5 +1,7 @@
 # Setup Guide — Windows
 
+> **Optional hosted stack.** This guide sets up the full stack with n8n and Paperclip, which local runs do not use. To run the demo or use the service locally (dashboard, scripts, CLI), follow [DEMO.md](DEMO.md) and the main [README](../README.md) instead. Paths and commands in this guide may predate the `taf` package; where they differ, the README is current.
+
 The same stack as [SETUP.md](SETUP.md), on **Windows 10 or 11**, using native Windows tools and **PowerShell**: the QA service, Ollama, the Playwright test repo, Paperclip and n8n, wired to Jira, GitHub and Xray.
 
 Phases 1–5 are specific to Windows and are written out in full below. Phases 6–9 (n8n, Jira and Xray) happen in the browser and are the same on every OS, so this guide sends you to `SETUP.md` for those and gives PowerShell versions of the few terminal commands they use.
