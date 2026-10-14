@@ -111,17 +111,22 @@ if ($LASTEXITCODE -ne 0 -and $Provider -ne "offline") {
 }
 
 Step "Running $Ticket (seed) - stage $Stage"
+$spec = Join-Path $repoPath "e2e\qa\$Ticket.spec.ts"
+$before = if (Test-Path $spec) { (Get-Item $spec).LastWriteTimeUtc } else { [datetime]::MinValue }
 $runArgs = @("-m", "taf", "run", $Ticket, "--source", "seed", "--stage", $Stage)
 if ($Provider) { $runArgs += @("--provider", $Provider) }
 & $venvPy @runArgs
 $code = $LASTEXITCODE
 
 Step "Result"
-$spec = Join-Path $repoPath "e2e\qa\$Ticket.spec.ts"
-if (-not $Push -and $haveRepo -and (Test-Path $spec)) {
-  Write-Host "spec: $spec"
+$written = (Test-Path $spec) -and ((Get-Item $spec).LastWriteTimeUtc -gt $before)
+if (-not $Push -and $haveRepo -and $written) {
+  Write-Host "spec written: $spec"
   Write-Host "run it again:  cd `"$repoPath`"; npx playwright test e2e/qa/$Ticket.spec.ts --project=qa-agent --reporter=list"
   Write-Host "discard it:    cd `"$repoPath`"; git checkout -- e2e/qa/$Ticket.spec.ts"
+}
+if (-not $Push -and $haveRepo -and -not $written) {
+  Write-Host "no spec was written this run (offline provider, or the automation stage did not get that far - see above)"
 }
 if ($Push) { Write-Host "branch: https://github.com/regina-triparc/tripbuilder-e2e/tree/qa/$Ticket" }
 Write-Host "dashboard:     .venv\Scripts\python.exe -m taf serve   ->  http://127.0.0.1:8000/dashboard"

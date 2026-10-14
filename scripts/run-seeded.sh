@@ -92,6 +92,8 @@ if ! "$VPY" -m taf doctor && [ "$PROVIDER" != offline ]; then
 fi
 
 step "Running $TICKET (seed) - stage $STAGE"
+SPEC="$REPO/e2e/qa/$TICKET.spec.ts"
+MARK="$(mktemp)"
 set +e
 if [ -n "$PROVIDER" ]; then "$VPY" -m taf run "$TICKET" --source seed --stage "$STAGE" --provider "$PROVIDER"
 else "$VPY" -m taf run "$TICKET" --source seed --stage "$STAGE"; fi
@@ -99,8 +101,13 @@ CODE=$?
 set -e
 
 step "Result"
-if [ "$PUSH" = 0 ] && [ "$HAVE_REPO" = 1 ] && [ -f "$REPO/e2e/qa/$TICKET.spec.ts" ]; then
-  echo "spec: $REPO/e2e/qa/$TICKET.spec.ts"
+WRITTEN=0; [ -f "$SPEC" ] && [ "$SPEC" -nt "$MARK" ] && WRITTEN=1
+rm -f "$MARK"
+if [ "$PUSH" = 0 ] && [ "$HAVE_REPO" = 1 ] && [ "$WRITTEN" = 0 ]; then
+  echo "no spec was written this run (offline provider, or the automation stage did not get that far - see above)"
+fi
+if [ "$PUSH" = 0 ] && [ "$HAVE_REPO" = 1 ] && [ "$WRITTEN" = 1 ]; then
+  echo "spec written: $SPEC"
   echo "run it again:  (cd \"$REPO\" && npx playwright test e2e/qa/$TICKET.spec.ts --project=qa-agent --reporter=list)"
   echo "discard it:    (cd \"$REPO\" && git checkout -- e2e/qa/$TICKET.spec.ts)"
 fi
