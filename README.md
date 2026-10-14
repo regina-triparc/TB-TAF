@@ -90,6 +90,96 @@ selector that switches the LLM provider for new runs. Runs started from the
 terminal appear there too. `uvicorn main:app --host 127.0.0.1 --port 8000` still
 works and is equivalent.
 
+## One command: the seeded ticket to a local test
+
+For someone who has cloned this repo, been sent the `.env` values, and cloned
+[tripbuilder-e2e](https://github.com/regina-triparc/tripbuilder-e2e) next to it
+(as `../tripbuilder-e2e`):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\run-seeded.ps1
+```
+
+```bash
+scripts/run-seeded.sh
+```
+
+The script:
+
+1. creates `.venv` and installs the requirements (again only when they change);
+2. creates `.env` from `.env.example` if it is missing;
+3. runs `doctor`;
+4. runs **TB-601 from the seed file** through every stage;
+5. writes `e2e/qa/TB-601.spec.ts` into your local tripbuilder-e2e clone and runs it.
+
+Nothing is committed or pushed. Discard the spec with
+`git checkout -- e2e/qa/TB-601.spec.ts` in the test repo.
+
+| Option (PowerShell / bash) | Effect |
+|---|---|
+| `-Provider claude` / `--provider claude` | Pick the model; `offline` proves the pipeline but writes no spec. Default: `LLM_PROVIDER` from `.env`. |
+| `-TestRepo C:\code\tripbuilder-e2e` / `--test-repo ...` | Where your tripbuilder-e2e clone is. |
+| `-Stage architect` / `--stage architect` | Stop earlier. Without a tripbuilder-e2e clone the script stops after the test plan anyway. |
+| `-Push` / `--push` | Use the agent's own clone from `.env` and push `qa/TB-601` instead of writing locally. |
+| `-Ticket TB-123` / `--ticket TB-123` | Another seeded ticket. |
+
+The test signs in with `TBA_E2E_EMAIL` / `TBA_E2E_PASSWORD` from the test
+repo's own `.env`.
+
+## Two workflows: real (Jira) and demo (seed)
+
+| | Real flow | Demo flow |
+|---|---|---|
+| Ticket comes from | the Jira API (`JIRA_BASE_URL` / `JIRA_EMAIL` / `JIRA_API_TOKEN`) | `data/seed_tickets.json` (TB-601) |
+| Linked PRs come from | Jira's development panel (GitHub for Jira) | the seed ticket's `pull_requests` |
+| Select it with | `TICKET_SOURCE=jira`, or `--source jira` | `TICKET_SOURCE=seed`, or `--source seed` |
+| Needs | a Jira API token | nothing |
+
+`TICKET_SOURCE=auto`, the default, uses Jira when all three Jira variables are set
+and the seed file otherwise. `--source` on `taf run` / `taf board`, or `"source"`
+in `POST /dashboard/api/start`, overrides it for one call. So
+`python -m taf run TB-601 --source seed` is always the demo, even on a machine
+with Jira configured.
+
+```bash
+python -m taf board --source jira
+```
+
+```bash
+python -m taf run TB-622 --source jira --stage architect
+```
+
+### Where the PR diff comes from
+
+The model never connects to GitHub itself. For each run the service:
+
+1. **finds the PRs.** Jira's development panel lists them (TB-601 → #740 and #764
+   merged, #763 declined). Declined PRs are skipped. A seed ticket lists them in
+   `pull_requests` instead.
+2. **fetches them with git.** The code lives in `TravelEdge/TripArc.TripBuilder`
+   (`SOURCE_REPO_URL`). Fetches go into a blobless bare clone at
+   `SOURCE_REPO_LOCAL_PATH` (about 15 MB, created on the first run), and the diff
+   is computed against each PR's base. git uses your normal GitHub sign-in, so
+   there is no token to manage. **You need read access to TripArc.TripBuilder.**
+   Without it the run continues without a diff, and the triage phase says so.
+3. **condenses the diff per agent.** TB-601's two PRs are about 610,000 characters,
+   mostly backend C#. Each agent gets a version that fits its budget:
+   - every changed file listed with its line counts;
+   - then full hunks for the files most useful for UI tests: frontend templates
+     under `DIFF_FOCUS_PATHS` first (roles, labels, visible text), then
+     components;
+   - lockfiles, docs and images (`DIFF_EXCLUDE_GLOBS`) never shown.
+
+   The budget is `MAX_DIFF_CHARS`, or the smaller `OLLAMA_MAX_DIFF_CHARS` on local
+   routes.
+
+**Local model and real diffs.** A 3B model with a 4,096-token context sees about
+6,000 characters of diff: the overview plus the three most relevant templates.
+That is enough to pick up real labels and button names, not to reason about the
+whole change. For a real ticket, use Claude for triage and automation, or at
+least `CLOUD_AGENTS=automation`. Run local models with 8 GB or more of free RAM;
+below about 2.5 GB free, one call can take an hour and time out.
+
 ## Terminal commands
 
 Run from the project root with the virtualenv active.
@@ -97,13 +187,15 @@ Run from the project root with the virtualenv active.
 | Command | What it does |
 |---|---|
 | `python -m taf doctor` | Checks Python, `.env`, the provider (key set / Ollama reachable), the queue, the test repo, Node and the page contract. Exits 1 on a blocking problem. |
-| `python -m taf board` | Lists the queue: Jira when configured, otherwise `data/seed_tickets.json`. |
+| `python -m taf board [--source jira\|seed]` | Lists the queue: Jira (real) or `data/seed_tickets.json` (demo). |
 | `python -m taf providers` | Shows the router: which provider and model each agent uses. |
 | `python -m taf providers --set ollama --server http://127.0.0.1:8000` | Switches the provider of a **running** service. Not persisted; `LLM_PROVIDER` in `.env` is the startup default. |
 | `python -m taf run TB-601` | Runs triage + architect (default `--stage architect`; no test repo needed). |
 | `python -m taf run TB-601 --stage full --provider claude` | Every stage, on Claude for this run only. Stages: `triage`, `architect`, `automation`, `full`. |
 | `python -m taf run TB-601 --show all` | Also prints execution logs. `--json` prints the whole final state instead. |
+| `python -m taf run TB-622 --source jira` | The real flow: ticket, linked PRs and their diff from Jira and git. `--source seed` forces the demo. |
 | `python -m taf run ABC-1 --summary "..." --description "..."` | A ticket that is in neither Jira nor the seed file. |
+| `scripts/run-seeded.ps1` / `scripts/run-seeded.sh` | Everything above in one go for the seeded ticket - see [One command](#one-command-the-seeded-ticket-to-a-local-test). |
 | `python -m taf skills` | Lists skills and the agents they apply to. |
 | `python -m taf eval --provider ollama` | Scores agent output against `evals/cases`. |
 | `python -m taf serve [--reload]` | Starts the API and the dashboard. |
@@ -140,6 +232,7 @@ taf/                           the service, as a package
     jira/board.py              Jira queue for the dashboard (falls back to the seed file)
     jira/xray.py               Xray CSV and bulk-import JSON
     github/repository.py       the Playwright test repo: git, install, playwright
+    github/pull_requests.py    PR diffs from the source repo, condensed per agent
     paperclip/control_room.py  Paperclip mirror and budget checks
   skills.py                    loads skills/*/SKILL.md into agent prompts
   runs/
@@ -462,6 +555,12 @@ the Trip Builder portal and doubles as a format example.
 | `DASHBOARD_TARGET_URL` | – | Target URL used by runs started from the dashboard buttons. |
 | `JIRA_BASE_URL` / `JIRA_EMAIL` / `JIRA_API_TOKEN` | – | Set all three to make the board poll Jira. With any of them missing it reads `SEED_TICKETS_PATH`. |
 | `SEED_TICKETS_PATH` | `data/seed_tickets.json` | Offline queue; ships with TB-601. |
+| `TICKET_SOURCE` | `auto` | `jira` (real flow), `seed` (demo) or `auto` (Jira when configured). |
+| `SOURCE_REPO_URL` | TripArc.TripBuilder in `.env.example` | Repo the PR diffs are read from, with git. Empty = no diffs. |
+| `SOURCE_REPO_LOCAL_PATH` / `SOURCE_BASE_BRANCH` | `../tripbuilder-src.git` / `develop` | Blobless bare clone used for diffs; base branch of the PRs. |
+| `FETCH_PR_DIFFS` | `true` | Set `false` to run without diffs. |
+| `DIFF_FOCUS_PATHS` / `DIFF_EXCLUDE_GLOBS` | `apps/` / lockfiles, docs, images | How a large diff is ranked and filtered before prompting. |
+| `OLLAMA_MAX_DIFF_CHARS` | `6000` | Diff budget on local-model routes (`MAX_DIFF_CHARS` applies to Claude). |
 | `SKILLS_ENABLED` / `SKILLS_ON_LOCAL` / `SKILLS_MAX_CHARS` / `SKILLS_DIR` | `true` / `false` / `12000` / `skills` | See [skills/README.md](skills/README.md). |
 | `JIRA_JQL` | see `.env.example` | Which tickets the board shows. |
 | `JIRA_POLL_SECONDS` / `JIRA_TIMEOUT_SECONDS` | `60` / `20` | Jira poll interval and request timeout. |
