@@ -51,14 +51,14 @@ def parse_playwright_counts(logs: str) -> Dict[str, int]:
     return counts
 
 
-def fallback_report_body(state: QAState) -> str:
-    """Deterministic report used when the local LLM is unavailable."""
+def fallback_report_body(state: QAState, reason: str = "Local report synthesizer unavailable") -> str:
+    """Deterministic report used when the local LLM is unavailable (or the run is offline)."""
     logs = state.get("execution_logs", "")
     failure_lines = [
         line.strip() for line in logs.splitlines()
         if re.search(r"(✘|\berror\b|failed|timed out|\[error\])", line, re.IGNORECASE)
     ][:40]
-    body = ["### Results", "_Local report synthesizer unavailable - showing extracted log lines._", ""]
+    body = ["### Results", f"_{reason} - showing extracted log lines._", ""]
     body += ["### Failures / errors", "```", *(failure_lines or ["(none detected)"]), "```"]
     body += ["", "### Log tail", "```", logs[-4000:], "```"]
     return "\n".join(body)
@@ -104,7 +104,7 @@ def report_synthesizer(state: QAState) -> Dict[str, Any]:
     if not logs.strip():
         body = "_No tests were executed in this run._"
     elif offline:
-        body = fallback_report_body(state)
+        body = fallback_report_body(state, "Offline provider")
     else:
         try:
             response = ROUTER.report_model().invoke([
