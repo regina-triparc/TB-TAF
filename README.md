@@ -262,9 +262,10 @@ The model never connects to GitHub itself. For each run the service:
 **Local model and real diffs.** A 3B model with a 4,096-token context sees about
 6,000 characters of diff: the overview plus the three most relevant templates.
 That is enough to pick up real labels and button names, not to reason about the
-whole change. In practice it plans 2 test cases for TB-601's ~13 criteria. For a
-real ticket, use Claude for triage and automation, or at least
-`CLOUD_AGENTS=automation`.
+whole change. Its plan size is capped by `OLLAMA_MAX_TEST_CASES` (5 by default;
+the demo uses 2 to keep a laptop run short), so coverage of TB-601's ~13 criteria
+is limited by design. For a real ticket, use Claude for triage and automation, or
+at least `CLOUD_AGENTS=automation`.
 
 ## Xray test cases: generated, reviewed, then exported
 
