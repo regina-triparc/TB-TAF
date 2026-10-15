@@ -1,28 +1,30 @@
 # Agent 3 - TS Automation Engineer
 
-Writes the Playwright spec for the plan's automatable cases and gets it to load.
-It then commits the spec together with the ticket's Xray test cases, and runs it.
+Writes the Playwright spec for the plan's automatable cases - text only. Writing,
+validating, running and publishing it are deterministic steps in `taf/steps/`; the
+graph sends a rejected spec back here with the reason (`spec_feedback`).
 
 | | |
 |---|---|
 | Runs on | the `automation` route: Claude (`CLAUDE_AUTOMATION_*`, Opus by default), Ollama, or offline |
 | Reads | `test_cases`, `triage_analysis`, `github_diff` (half the diff budget), the page contract (`PAGE_CONTRACT_PATH`) |
-| Writes | `generated_typescript_code`, `spec_file_path`, `xray_files`, `git_branch`, `git_pushed`, `execution_logs`, `execution_passed` |
+| Reads also | `repo_context` (the test repo's page objects, fixtures, helpers, example spec), `spec_feedback` on a repair |
+| Writes | `generated_typescript_code`, `spec_attempts`, `spec_feedback` |
 | Skills | `agents: automation`: the four Playwright skills |
 | Stage | `automation`, `full` |
 
-## What it does in the test repo (tripbuilder-e2e)
+## Where it sits in the workflow (tripbuilder-e2e)
 
-1. Prepares the repo: its own clone on branch `qa/<TICKET>`, or your working copy
-   in place (`TEST_REPO_NO_GIT=true`).
-2. Writes `xray/<TICKET>/`: `<TICKET>.xray.json`, `<TICKET>.xray.csv` and
-   `<TICKET>.test-plan.md`.
-3. Writes `e2e/qa/<TICKET>.spec.ts`, and runs `playwright test --list`. If the spec
-   does not load, the loader error goes back to the model (`repair-prompt.md`), up
-   to `SPEC_REPAIR_ATTEMPTS` times.
-4. Commits the spec and the Xray files in one commit, and pushes the branch when
-   `GIT_PUSH_ENABLED=true`. In place, nothing is committed.
-5. Runs the spec with `PLAYWRIGHT_EXTRA_ARGS` (`--project=qa-agent`).
+1. `repo_context` (deterministic) prepares the test repo and reads its conventions;
+   they are part of this agent's prompt, with exact import paths.
+2. **This agent** writes `e2e/qa/<TICKET>.spec.ts` as text.
+3. `validate_spec` rejects unsafe or unloadable specs (Node APIs, missing imports,
+   `playwright test --list`, `tsc`, ESLint). A fixable failure comes back here with
+   the checker output (`repair-prompt.md`), up to `SPEC_REPAIR_ATTEMPTS` times.
+4. `run_tests` runs it with `PLAYWRIGHT_EXTRA_ARGS` (`--project=qa-agent`);
+   `review_spec` can also send it back once for blockers (fixed sleeps, `.only`,
+   hard-coded secrets).
+5. After approval, `publish` commits the spec with `xray/<TICKET>/` on `qa/<TICKET>`.
 
 The offline provider writes nothing to the repo: its placeholders must never
 replace real tests.
@@ -32,10 +34,10 @@ replace real tests.
 | File | What it is |
 |---|---|
 | `prompt.md` | The system prompt: the hard rules for a generated spec. |
-| `repair-prompt.md` | The follow-up turn sent when Playwright cannot load the spec. `{spec}` and `{error}` are filled in. |
-| `agent.py` | Context building, the repair loop, and the repo steps above. |
+| `repair-prompt.md` | The follow-up turn sent when a check rejects the spec. `{spec}` and `{error}` are filled in. |
+| `agent.py` | Prompt building (ticket, plan, diff, repo conventions, page contract) and the repair turn. |
 
-The git and Playwright commands themselves are in
+The checks and repo steps are in `taf/steps/`; the git and Playwright commands in
 `taf/integrations/github/repository.py`.
 
 ## Change its behaviour
@@ -44,5 +46,5 @@ The git and Playwright commands themselves are in
   (`skills/<name>/SKILL.md` with `agents: automation`).
 - **Real selectors:** keep the page contract current. It has the biggest single
   effect on whether specs pass.
-- **Check the effect:** `python -m taf eval --stage automation`, which grades the
-  spec without touching any repo.
+- **Check the effect:** `python -m taf eval --stage automation` grades the spec
+  without touching any repo; add `--with-repo` for tsc / ESLint / `--list`.
