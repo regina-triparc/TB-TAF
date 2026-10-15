@@ -92,18 +92,18 @@ h1 { font-size: 22px; margin: 0 0 4px; }
 h2 { font-size: 16px; margin: 32px 0 12px; }
 h3 { font-size: 14px; margin: 16px 0 8px; }
 .sub { color: var(--ink-2); margin: 0 0 16px; }
-.card { background: var(--surface); border: 1px solid var(--ring); border-radius: 10px; padding: 16px; }
+.card { background: var(--surface); border: 1px solid var(--ring); border-radius: 10px; padding: 16px; min-width: 0; overflow-x: auto; }
 .legend { display: flex; flex-wrap: wrap; gap: 16px; margin: 8px 0 0; }
 .chip { display: inline-flex; align-items: center; gap: 8px; color: var(--ink); }
 .sw { width: 12px; height: 12px; border-radius: 3px; display: inline-block; flex: none; }
 .models { color: var(--ink-2); font-size: 12px; }
-.tiles { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
+.tiles { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(min(260px, 100%), 1fr)); }
 .tile h3 { margin: 0 0 8px; display: flex; align-items: center; gap: 8px; }
 .kv { display: grid; grid-template-columns: auto 1fr; gap: 4px 16px; }
 .kv dt { color: var(--ink-2); }
 .kv dd { margin: 0; font-variant-numeric: tabular-nums; text-align: right; }
 .big { font-size: 28px; font-weight: 600; font-variant-numeric: tabular-nums; }
-.charts { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); }
+.charts { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(min(340px, 100%), 1fr)); }
 .chart-title { font-weight: 600; margin: 0 0 2px; }
 .chart-note { color: var(--ink-2); font-size: 12px; margin: 0 0 8px; }
 svg text { fill: var(--muted); font-size: 11px; }
@@ -122,7 +122,7 @@ td.num { text-align: right; font-variant-numeric: tabular-nums; }
 .no { color: var(--critical); }
 .soft { color: var(--muted); font-size: 11px; margin-left: 4px; }
 .why { color: var(--ink-2); font-size: 12px; }
-.cols { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); }
+.cols { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(min(320px, 100%), 1fr)); }
 .col-h { display: flex; align-items: center; gap: 8px; font-weight: 600; margin-bottom: 8px; }
 pre { background: var(--page); border: 1px solid var(--ring); border-radius: 8px; padding: 10px;
       overflow: auto; max-height: 520px; font-size: 12px; }
