@@ -192,6 +192,7 @@ def run_case(case: Dict[str, Any], provider: str, last_stage: str,
         try:
             for stage in stages:
                 started = time.monotonic()
+                tokens_before = BUDGET.run_usage(state["run_id"])
                 if stage == "triage":
                     state.update(intake_triager(state))
                     checks = graders.grade_triage(state.get("triage_analysis") or {}, expect.get("triage", {}))
@@ -222,6 +223,7 @@ def run_case(case: Dict[str, Any], provider: str, last_stage: str,
                     checks.insert(0, graders.check("agent ran without error", False,
                                                    "; ".join(state["errors"])[:400]))
                 result["stages"][stage] = {"seconds": round(time.monotonic() - started, 1),
+                                           "tokens": BUDGET.run_usage(state["run_id"]) - tokens_before,
                                            "checks": checks, **graders.score(checks)}
                 if state.get("aborted") or state.get("errors"):
                     break
@@ -233,6 +235,7 @@ def run_case(case: Dict[str, Any], provider: str, last_stage: str,
                 except Exception as exc:  # noqa: BLE001 - a judge failure is reported, not fatal
                     result["judge"] = {"error": f"{type(exc).__name__}: {exc}"[:400], "prompt": opts.judge}
         finally:
+            result["outputs"] = outputs(state)
             result["cloud_cost_usd"] = round(BUDGET.run_cost_usd(state["run_id"]), 4)
             BUDGET.release(state["run_id"])
         result["passed"] = bool(result["stages"]) and all(s["passed"] for s in result["stages"].values()) \
@@ -241,6 +244,20 @@ def run_case(case: Dict[str, Any], provider: str, last_stage: str,
         root.update(output={"passed": result["passed"], "stages": {k: {"hard": v["hard"], "soft": v["soft"]}
                                                                    for k, v in result["stages"].items()}})
     return result
+
+
+def outputs(state: Dict[str, Any]) -> Dict[str, Any]:
+    """What the agents produced, kept with the scores so runs can be read side by side."""
+    triage = state.get("triage_analysis") or {}
+    return {
+        "triage": {k: triage.get(k) for k in ("feature_summary", "risk_level", "acceptance_criteria", "risks",
+                                               "impacted_areas", "gaps_and_questions")},
+        "test_cases": [{k: c.get(k) for k in ("test_id", "summary", "priority", "category", "automatable",
+                                               "acceptance_criteria_refs", "steps")}
+                       for c in state.get("test_cases") or []],
+        "spec": (state.get("generated_typescript_code") or "")[:80_000],
+        "errors": state.get("errors") or [],
+    }
 
 
 def _score_in_langfuse(result: Dict[str, Any]) -> None:
@@ -362,6 +379,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Optional[List[str]] = None) -> int:
     argv = list(argv or [])
+    if argv[:1] == ["report"]:
+        from evals.report import main as report_main
+
+        return report_main(argv[1:])
     if argv[:1] == ["compare"]:
         if len(argv) != 3:
             print("usage: python -m taf eval compare A.json B.json")

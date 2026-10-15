@@ -101,6 +101,24 @@ class RunnerTest(unittest.TestCase):
             self.assertTrue({"id", "ticket", "expect"} <= set(c), c.get("id"))
 
 
+class ReportTest(unittest.TestCase):
+    def test_report_embeds_both_runs_and_outputs(self):
+        tmp = Path(tempfile.mkdtemp())
+        a, b = tmp / "a.json", tmp / "b.json"
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            runner.main(["--provider", "offline", "--case", "tb-601", "--label", "local", "--out", str(a)])
+            runner.main(["--provider", "offline", "--case", "tb-601", "--label", "cloud </script>", "--out", str(b)])
+            code = runner.main(["report", str(a), str(b), "--out", str(tmp / "r.html")])
+        self.assertEqual(code, 0)
+        result = json.loads(a.read_text())["results"][0]
+        self.assertTrue(result["outputs"]["spec"])
+        self.assertIn("tokens", result["stages"]["triage"])
+        page = (tmp / "r.html").read_text(encoding="utf-8")
+        self.assertIn('"label": "local"', page)
+        self.assertNotIn("cloud </script>", page, "data must not be able to close the script tag")
+
+
 class JudgeTest(unittest.TestCase):
     def test_prompt_is_versioned(self):
         prompt = judge_prompt()
