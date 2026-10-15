@@ -393,7 +393,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     out.write_text(json.dumps({"metadata": meta, "provider": resolved, "stage": args.stage, "results": results},
                               indent=2), encoding="utf-8")
     passed = sum(r["passed"] for r in results)
-    shown = out.relative_to(Path.cwd()) if out.resolve().is_relative_to(Path.cwd()) else out
+    out = out.resolve()
+    shown = out.relative_to(Path.cwd().resolve()) if out.is_relative_to(Path.cwd().resolve()) else out
     print(f"\n{passed}/{len(results)} case(s) passed. Saved {shown}")
     print(f"Compare with an earlier run: python -m taf eval compare <earlier.json> {shown}")
     return 0 if passed == len(results) else 1
