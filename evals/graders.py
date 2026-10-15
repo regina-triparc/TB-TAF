@@ -105,13 +105,14 @@ def grade_plan(cases: List[Dict[str, Any]], expect: Dict[str, Any], criteria: Li
                             dimension="scenarios"))
 
     # Traceability: every case cites a criterion, and every criterion is cited.
-    refs = [r.upper() for c in cases for r in c.get("acceptance_criteria_refs") or []]
     uncited = [c.get("test_id") for c in cases if not c.get("acceptance_criteria_refs")]
     checks.append(check("every case cites a criterion", not uncited, f"no refs: {uncited}" if uncited else "",
                         hard=expect.get("require_traceability", True), dimension="traceability"))
     if criteria:
-        uncovered = [f"AC-{n}" for n in range(1, len(criteria) + 1)
-                     if f"AC-{n}" not in refs and not any(criteria[n - 1][:40].upper() in r for r in refs)]
+        from taf.steps.review import covered_criteria
+
+        covered = covered_criteria(criteria, cases)
+        uncovered = [f"AC-{n}" for n in range(1, len(criteria) + 1) if n not in covered]
         checks.append(check("every criterion is tested", not uncovered,
                             f"criteria without a case: {uncovered}" if uncovered else f"{len(criteria)} covered",
                             hard=False, dimension="traceability"))

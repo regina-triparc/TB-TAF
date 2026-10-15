@@ -41,6 +41,33 @@ def finding(severity: str, rule: str, detail: str) -> Finding:
     return {"severity": severity, "rule": rule, "detail": detail}
 
 
+def _norm(text: str) -> str:
+    return re.sub(r"\s+", " ", str(text or "")).strip().lower()
+
+
+def covered_criteria(criteria: List[str], cases: List[Dict[str, Any]]) -> set:
+    """
+    1-based positions of the acceptance criteria the plan's cases reference. Models
+    write references as "AC-2", "AC2", "2" or "#2" (the criterion's position in the
+    triage list), or quote the criterion's text - all are accepted.
+    """
+    covered = set()
+    for case in cases:
+        for ref in case.get("acceptance_criteria_refs") or []:
+            ref = str(ref)
+            if len(ref.strip()) <= 12:
+                match = re.search(r"(\d+)", ref)
+                if match and 1 <= int(match.group(1)) <= len(criteria):
+                    covered.add(int(match.group(1)))
+                continue
+            quoted = _norm(ref)
+            for n, criterion in enumerate(criteria, start=1):
+                text = _norm(criterion)
+                if len(text) >= 8 and (text[:40] in quoted or quoted[:40] in text):
+                    covered.add(n)
+    return covered
+
+
 def rule_review(code: str, cases: List[Dict[str, Any]], criteria: List[str],
                 repo_facts: Dict[str, Any]) -> List[Finding]:
     """Deterministic findings: blocker | major | minor."""
@@ -62,9 +89,10 @@ def rule_review(code: str, cases: List[Dict[str, Any]], criteria: List[str],
     if missing:
         out.append(finding("major", "traceability", f"automatable cases with no [TC-xxx] test: {missing}"))
 
-    refs = {r.upper() for c in cases for r in c.get("acceptance_criteria_refs") or []}
-    uncovered = [f"AC-{n}" for n in range(1, len(criteria) + 1) if f"AC-{n}" not in refs]
-    if criteria and refs and uncovered:
+    has_refs = any(c.get("acceptance_criteria_refs") for c in cases)
+    covered = covered_criteria(criteria, cases)
+    uncovered = [f"AC-{n}" for n in range(1, len(criteria) + 1) if n not in covered]
+    if criteria and has_refs and uncovered:
         out.append(finding("major", "criteria coverage", f"criteria no test case references: {uncovered}"))
 
     raw = _RAW_LOCATOR_RE.findall(code)

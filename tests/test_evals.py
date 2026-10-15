@@ -28,6 +28,14 @@ class GraderTest(unittest.TestCase):
         self.assertIn("every case cites a criterion", failed(checks))
         self.assertIn("every criterion is tested", failed(checks))
 
+    def test_reference_styles_models_use(self):
+        from taf.steps.review import covered_criteria
+
+        criteria = ["TSP itinerary:", "1. Each day card has an 'Add Service' button", "B", "C", "D"]
+        cases = [case("TC-001", "a", ["AC3", "#4"]), case("TC-002", "b", ["AC-5"]),
+                 case("TC-003", "c", ["1. Each day card has an 'Add Service' button that opens the add flow"])]
+        self.assertEqual(covered_criteria(criteria, cases), {2, 3, 4, 5})
+
     def test_redundant_cases_are_flagged(self):
         cases = [case("TC-001", "filter hotels by price range", ["AC-1"]),
                  case("TC-002", "filter hotels by price range", ["AC-2"])]
