@@ -123,6 +123,25 @@ class ApprovalAndPublishTest(WorkflowTestCase):
         self.assertEqual(len(FakePullRequests.created), 1, "the open PR is reused")
 
 
+class N8nPathTest(WorkflowTestCase):
+    settings = {"git_push_enabled": True}
+
+    def test_n8n_run_pauses_for_approval_and_resumes_into_closeout(self):
+        import uuid
+
+        from taf.runs.registry import RUNS, execute_qa_run
+
+        run_id = uuid.uuid4().hex
+        RUNS.try_start(run_id, "N8N-1")
+        execute_qa_run({"run_id": run_id, "ticket_id": "N8N-1", "summary": "N8N-1", "description": DESCRIPTION,
+                        "target_url": "https://app.example.test", "n8n_callback_url": "", "github_diff": "",
+                        "environment_logs": "", "errors": [], "llm_provider": "ollama"})
+        self.assertEqual(RUNS.get(run_id)["status"], "waiting_approval")
+        final = stages.resume(run_id, {"approved": True, "by": "r"})
+        self.assertIn("N8N-1.spec.ts", " ".join(self.wb.remote_files("qa/N8N-1")))
+        self.assertTrue(any("no n8n_callback_url" in e for e in final["errors"]), "closeout ran after the report")
+
+
 class RepairLoopTest(WorkflowTestCase):
     settings = {"require_approval": False}
 
