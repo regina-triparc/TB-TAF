@@ -301,14 +301,8 @@ def cmd_eval(args: argparse.Namespace) -> int:
     if str(PROJECT_ROOT) not in sys.path:  # evals/ sits next to taf/, not inside it
         sys.path.insert(0, str(PROJECT_ROOT))
     from evals.runner import main as eval_main
-    argv: List[str] = []
-    if args.provider:
-        argv += ["--provider", args.provider]
-    for case in args.case or []:
-        argv += ["--case", case]
-    if args.stage:
-        argv += ["--stage", args.stage]
-    return eval_main(argv)
+    # Everything after `eval` goes to the eval runner (see `python -m taf eval --help`).
+    return eval_main(args.eval_args)
 
 
 # ------------------------------------------------------------------- serve --
@@ -435,10 +429,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--json", action="store_true", help="print the final pipeline state as JSON")
     p.set_defaults(fn=cmd_resume)
 
-    p = sub.add_parser("eval", help="score agent output against evals/cases")
-    p.add_argument("--provider", choices=LLM_PROVIDERS)
-    p.add_argument("--case", action="append", help="case id (repeatable); default: all")
-    p.add_argument("--stage", choices=["triage", "architect", "automation"], help="stop after this agent")
+    p = sub.add_parser("eval", add_help=False,
+                       help="score agent output against evals/cases (`eval --help`; `eval compare A B`)")
+    p.add_argument("eval_args", nargs=argparse.REMAINDER)
     p.set_defaults(fn=cmd_eval)
 
     p = sub.add_parser("xray", help="Xray test cases kept in the test repo")
@@ -465,6 +458,13 @@ def main(argv: Optional[List[str]] = None) -> int:
             stream.reconfigure(errors="replace")  # type: ignore[attr-defined]
         except (AttributeError, ValueError):
             pass
+    raw = list(sys.argv[1:] if argv is None else argv)
+    if raw[:1] == ["eval"]:  # the eval runner has its own options; pass them through untouched
+        import logging
+
+        import taf.config  # noqa: F401  (configures logging first)
+        logging.getLogger().setLevel(logging.WARNING)
+        return cmd_eval(argparse.Namespace(eval_args=raw[1:]))
     args = build_parser().parse_args(argv)
     if args.command != "serve" and not args.verbose:
         # Agent events are logged at INFO for the service log; on a terminal the

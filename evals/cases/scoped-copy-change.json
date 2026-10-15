@@ -1,0 +1,21 @@
+{
+  "id": "scoped-copy-change",
+  "description": "A tiny, well-bounded change. Good output stays in scope: no tests for checkout or payments the ticket explicitly excludes.",
+  "ticket": {
+    "key": "SCP-2",
+    "summary": "Rename 'Basket' to 'Trip cart' in the header",
+    "target_url": "https://app.example.test",
+    "description": "Marketing asked to rename the header link.\n\nACCEPTANCE CRITERIA\n1. The header link previously labelled 'Basket' now reads 'Trip cart' on every page.\n2. The link still opens /cart.\n3. The item counter badge next to the link is unchanged.\n\nOut of scope: the checkout flow and payment pages are not touched by this ticket."
+  },
+  "expect": {
+    "triage": {"min_criteria": 3, "risk_level_in": ["low", "medium"], "must_mention": ["Trip cart"]},
+    "architect": {"min_cases": 2, "max_cases": 8, "min_automatable": 2, "must_cover": ["Trip cart"]},
+    "automation": {
+      "min_tests": 2,
+      "require": ["@playwright/test"],
+      "forbid": ["waitForTimeout"],
+      "prefer": ["getByRole"],
+      "out_of_scope": ["payment", "checkout"]
+    }
+  }
+}

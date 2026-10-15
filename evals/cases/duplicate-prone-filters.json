@@ -1,0 +1,15 @@
+{
+  "id": "duplicate-prone-filters",
+  "description": "Criteria that repeat each other in different words. Good output merges them instead of planning the same test twice.",
+  "ticket": {
+    "key": "DUP-3",
+    "summary": "Hotel search: price filter",
+    "target_url": "https://app.example.test",
+    "description": "ACCEPTANCE CRITERIA\n1. The results page has a price range filter with a minimum and maximum.\n2. Setting a minimum and maximum price shows only hotels whose nightly price is within the range.\n3. Only hotels priced between the selected minimum and maximum are listed after filtering.\n4. Clearing the price filter shows all hotels again.\n5. The selected price range is kept in the URL so the filtered page can be shared."
+  },
+  "expect": {
+    "triage": {"min_criteria": 3, "must_mention": ["price"]},
+    "architect": {"min_cases": 3, "max_cases": 12, "min_automatable": 2, "must_cover": ["URL"]},
+    "automation": {"min_tests": 2, "require": ["@playwright/test"], "forbid": ["waitForTimeout"], "prefer": ["getByRole", "toHaveURL"]}
+  }
+}
