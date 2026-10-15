@@ -58,6 +58,10 @@ if (-not $Push -and $haveRepo -and $written) {
 if (-not $Push -and $haveRepo -and -not $written) {
   Write-Host "no spec was written this run (offline provider, or the automation stage did not get that far - see above)"
 }
-if ($Push) { Write-Host "branch: https://github.com/regina-triparc/tripbuilder-e2e/tree/qa/$Ticket" }
+if ($Push) {
+  Write-Host "push mode: nothing is pushed until you approve (REQUIRE_APPROVAL in .env) -"
+  Write-Host "           use the resume command printed above, or Approve on the dashboard."
+  Write-Host "branch after approval: https://github.com/regina-triparc/tripbuilder-e2e/tree/qa/$Ticket"
+}
 Write-Host "dashboard:     .venv\Scripts\python.exe -m taf serve   ->  http://127.0.0.1:8000/dashboard"
 exit $code

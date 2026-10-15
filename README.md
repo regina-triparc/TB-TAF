@@ -221,6 +221,22 @@ how to discard them. Options: `-Ticket`, `-Stage`, `-Provider`, `-TestRepo`,
 The generated test signs in with `TBA_E2E_EMAIL` / `TBA_E2E_PASSWORD` from the
 test repo's own `.env`.
 
+### `compare-models` - the same ticket on two models, side by side
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\compare-models.ps1                      # tb-601: ollama vs claude
+powershell -ExecutionPolicy Bypass -File scripts\compare-models.ps1 -WithRepo -Judge     # + test-repo checks, LLM judge
+powershell -ExecutionPolicy Bypass -File scripts\compare-models.ps1 -Providers offline,ollama -Case sample-password-reset
+```
+
+(macOS / Linux: `scripts/compare-models.sh`, options `--providers`, `--case`, `--with-repo`,
+`--judge`, `--langfuse`.) Runs the eval suite once per provider, then opens an HTML
+report: checks passed per dimension, time and tokens per stage, every check with its
+reason, and the criteria, test plan and spec each model wrote. Nothing is committed or
+pushed. Needs `.venv` (run `run-seeded` once) and, for Claude, `ANTHROPIC_API_KEY`;
+a TB-601 Claude run costs about $0.70-0.90. Any two result files can also be compared
+by hand: `python -m taf eval report A.json B.json`.
+
 ## Two workflows: real (Jira) and demo (seed)
 
 | | Real flow | Demo flow |

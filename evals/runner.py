@@ -151,12 +151,22 @@ def _repo_checks(state: Dict[str, Any], code: str, execute: bool) -> Dict[str, A
             out["checks"] += static
             if not all(c["ok"] for c in static):
                 return out  # unsafe or unresolvable code is never loaded
-            with TEST_REPO.ticket_files_on_base(state["ticket_id"], code, xray.ticket_dir(state["ticket_id"]), {},
-                                                logs) as (spec, _):
-                assert spec is not None
-                out["checks"] += repo_checks(spec, state["target_url"], logs)
-                if execute and all(c["ok"] or c["skipped"] for c in out["checks"]):
-                    out["passed"] = TEST_REPO.run_playwright(spec, state["target_url"], logs)
+            spec_file = TEST_REPO.path / spec_rel
+            original = spec_file.read_bytes() if spec_file.is_file() else None
+            try:
+                with TEST_REPO.ticket_files_on_base(state["ticket_id"], code, xray.ticket_dir(state["ticket_id"]),
+                                                    {}, logs) as (spec, _):
+                    assert spec is not None
+                    out["checks"] += repo_checks(spec, state["target_url"], logs)
+                    if execute and all(c["ok"] or c["skipped"] for c in out["checks"]):
+                        out["passed"] = TEST_REPO.run_playwright(spec, state["target_url"], logs)
+            finally:
+                # In place (TEST_REPO_NO_GIT) git does not clean up; an eval must leave no trace.
+                if TEST_REPO.settings.no_git:
+                    if original is None:
+                        spec_file.unlink(missing_ok=True)
+                    else:
+                        spec_file.write_bytes(original)
         except CommandError as exc:
             out["checks"].append({"name": "test repository", "ok": False, "detail": str(exc)})
     return out

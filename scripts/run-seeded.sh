@@ -56,6 +56,10 @@ if [ "$PUSH" = 0 ] && [ "$HAVE_REPO" = 1 ] && [ "$WRITTEN" = 1 ]; then
   echo "run it again:  (cd \"$REPO\" && npx playwright test e2e/qa/$TICKET.spec.ts --project=qa-agent --reporter=list)"
   echo "discard it:    (cd \"$REPO\" && git checkout -- e2e/qa/$TICKET.spec.ts && rm -rf xray/$TICKET)   (or git checkout -- xray/$TICKET if it was committed)"
 fi
-if [ "$PUSH" = 1 ]; then echo "branch: https://github.com/regina-triparc/tripbuilder-e2e/tree/qa/$TICKET"; fi
+if [ "$PUSH" = 1 ]; then
+  echo "push mode: nothing is pushed until you approve (REQUIRE_APPROVAL in .env) -"
+  echo "           use the resume command printed above, or Approve on the dashboard."
+  echo "branch after approval: https://github.com/regina-triparc/tripbuilder-e2e/tree/qa/$TICKET"
+fi
 echo "dashboard:     $VPY -m taf serve   ->  http://127.0.0.1:8000/dashboard"
 exit $CODE
