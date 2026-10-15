@@ -229,9 +229,11 @@ def _drive(run_id: str, ticket_id: str, graph_input: Any, on_phase: Optional[OnP
     store = get_store()
     cancel = _register_cancel(run_id)
     notify = on_phase or (lambda *_: None)
-    values = lambda: dict(graph.get_state(config).values)  # noqa: E731
-    recorder = PhaseRecorder(run_id, ticket_id, notify, values)
-    trace_state = graph_input if isinstance(graph_input, dict) else values()
+    # The run's state as the stream reports it. Reading the checkpoint mid-run can lag
+    # (checkpoints are written asynchronously), so phase details use this instead.
+    current: Dict[str, Any] = dict(graph_input) if isinstance(graph_input, dict) else         dict(graph.get_state(config).values)
+    recorder = PhaseRecorder(run_id, ticket_id, notify, lambda: current)
+    trace_state = current
     interrupted: Any = None
     crashed: Optional[BaseException] = None
     cancelled = False
@@ -246,12 +248,18 @@ def _drive(run_id: str, ticket_id: str, graph_input: Any, on_phase: Optional[OnP
                         recorder.node_started(event["name"])
                     elif mode == "tasks":
                         recorder.node_finished(event["name"], event.get("result"), event.get("error"))
-                    elif mode == "updates" and "__interrupt__" in event:
-                        interrupted = event["__interrupt__"]
+                    elif mode == "updates":
+                        if "__interrupt__" in event:
+                            interrupted = event["__interrupt__"]
+                        for node, update in event.items():
+                            if node.startswith("__") or not isinstance(update, dict):
+                                continue
+                            for key, value in update.items():
+                                current[key] = (current.get(key) or []) + value if key == "errors" else value
             except Exception as exc:  # noqa: BLE001 - nodes catch their own; this is the last resort
                 crashed = exc
 
-            final = values()
+            final = {**current, **dict(graph.get_state(config).values)}
             if interrupted is not None:
                 recorder.close("waiting")
                 store.set_run_state(run_id, "waiting")

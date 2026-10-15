@@ -56,6 +56,9 @@ class ApprovalAndPublishTest(WorkflowTestCase):
         recorded, run = phases(state["run_id"])
         self.assertEqual(recorded[-1], ("approval", "waiting"))
         self.assertEqual(run["state"], "waiting")
+        triage = next(p for p in run["phases"] if p["phase"] == "triage")
+        self.assertIn("3 criteria", triage["detail"])  # details come from this run's outputs
+        self.assertEqual(len(triage["artifact"]["acceptance_criteria"]), 3)
         with self.assertRaises(stages.StageError):  # a waiting ticket blocks a second run
             stages.prepare(ticket, "full", summary="x", source="seed")
 
