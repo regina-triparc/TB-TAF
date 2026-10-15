@@ -22,6 +22,7 @@ from taf.integrations.paperclip.control_room import CONTROL_ROOM
 from taf.llm.budget import BUDGET
 from taf.llm.pricing import token_usage
 from taf.llm.router import ROUTER
+from taf.observability.tracing import TRACER
 
 log = logging.getLogger("qa")
 
@@ -57,8 +58,9 @@ def report_synthesizer(state: QAState) -> Dict[str, Any]:
     provider = state.get("llm_provider")
     passed = bool(state.get("execution_passed")) and not state.get("aborted")
     logs = state.get("execution_logs", "")
-    counts = parse_playwright_counts(logs)
+    counts = (state.get("playwright") or {}).get("counts") or parse_playwright_counts(logs)
     errors = state.get("errors", [])
+    trace_url = state.get("trace_url") or TRACER.trace_url(run_id)
 
     header = [
         f"## QA Report - {ticket_id}",
@@ -67,8 +69,29 @@ def report_synthesizer(state: QAState) -> Dict[str, Any]:
         f"**Target:** {state.get('target_url', '')}  ",
         f"**Run ID:** `{run_id}` · **Finished:** {utc_now()}  ",
     ]
+    validation = state.get("validation") or {}
+    if validation.get("checks"):
+        failed = [c["name"] for c in validation["checks"] if not c.get("ok") and not c.get("skipped")]
+        verdict = "passed" if validation.get("ok") else f"FAILED ({', '.join(failed)})"
+        header.append(f"**Static validation:** {verdict} after {validation.get('attempt', 1)} attempt(s)  ")
+    review = state.get("review") or {}
+    if review.get("findings"):
+        severities: Dict[str, int] = {}
+        for f in review["findings"]:
+            severities[f["severity"]] = severities.get(f["severity"], 0) + 1
+        header.append("**Review:** " + ", ".join(f"{n} {k}" for k, n in severities.items()) + "  ")
+    approval = state.get("approval") or {}
+    if approval.get("status"):
+        header.append(f"**Approval:** {approval['status']}"
+                      + (f" by {approval['by']}" if approval.get("by") else "")
+                      + (f" ({approval['note']})" if approval.get("note") else "") + "  ")
     if state.get("git_branch"):
         header.append(f"**Spec branch:** `{state['git_branch']}` (pushed: {'yes' if state.get('git_pushed') else 'no'})  ")
+    pr_url = (state.get("publish") or {}).get("pr_url")
+    if pr_url:
+        header.append(f"**Pull request:** {pr_url}  ")
+    if trace_url:
+        header.append(f"**Trace:** {trace_url}  ")
     if counts:
         header.append("**Playwright:** " + ", ".join(f"{v} {k}" for k, v in counts.items()) + "  ")
     cache_reads = BUDGET.run_cache_read_tokens(run_id)
@@ -98,7 +121,7 @@ def report_synthesizer(state: QAState) -> Dict[str, Any]:
                 SystemMessage(content=SYSTEM_PROMPT),
                 HumanMessage(content=f"Overall verdict (authoritative): {'PASSED' if passed else 'FAILED'}\n\n"
                                      f"```\n{truncate_middle(logs, SETTINGS.max_exec_log_chars_for_llm)}\n```"),
-            ])
+            ], config=report_config(state))
             local_usage = token_usage(response)
             CONTROL_ROOM.emit(run_id, ticket_id, "llm.usage", agent="Report Synthesizer",
                               provider="ollama", model=SETTINGS.ollama_model, billing_type="fixed",
@@ -111,4 +134,13 @@ def report_synthesizer(state: QAState) -> Dict[str, Any]:
                               message=f"Ollama unavailable, fallback report used: {type(exc).__name__}")
             body = fallback_report_body(state)
 
-    return {"final_report": "\n".join(header) + "\n\n" + body, "execution_passed": passed}
+    return {"final_report": "\n".join(header) + "\n\n" + body, "execution_passed": passed,
+            "trace_url": trace_url}
+
+
+def report_config(state: QAState) -> Dict[str, Any]:
+    """Langfuse callbacks and labels for the local report model's call."""
+    return {"callbacks": TRACER.langchain_callbacks(), "run_name": "Report Synthesizer",
+            "tags": ["agent:report", "provider:ollama"],
+            "metadata": {"run_id": state.get("run_id", ""), "ticket_id": state.get("ticket_id", ""),
+                         "agent": "report", "provider": "ollama", "model": SETTINGS.ollama_model}}

@@ -32,6 +32,7 @@ from taf.config import LLM_PROVIDERS, SETTINGS, Settings
 from taf.llm import offline
 from taf.llm.budget import BUDGET
 from taf.llm.pricing import MODEL_PRICING, token_usage
+from taf.observability.tracing import TRACER
 
 log = logging.getLogger("qa.router")
 
@@ -40,6 +41,8 @@ AGENT_LABELS: Dict[str, str] = {
     "architect": "Test Architect",
     "automation": "TS Automation Engineer",
 }
+# Routes outside the main pipeline: the optional LLM review of a generated spec.
+EXTRA_LABELS: Dict[str, str] = {"review": "Test Reviewer"}
 _VALID_EFFORTS = {"low", "medium", "high", "xhigh", "max"}
 
 
@@ -108,20 +111,22 @@ class LLMRouter:
     # -------------------------------------------------------------- routes --
     def route(self, key: str, provider: Optional[str] = None) -> AgentRoute:
         s = self.settings
-        label = AGENT_LABELS[key]
+        label = AGENT_LABELS.get(key) or EXTRA_LABELS[key]
         concrete = self.resolve(provider)
         if concrete == "offline":
             return AgentRoute(key, label, "offline-stub", "n/a", 0, False, "offline")
         if concrete == "ollama" and not self._pinned_to_cloud(key):
             local_override = {"triage": s.ollama_triage_model,
                               "architect": s.ollama_architect_model,
-                              "automation": s.ollama_automation_model}[key]
+                              "automation": s.ollama_automation_model,
+                              "review": s.ollama_review_model}[key]
             return AgentRoute(key, label, local_override or s.ollama_model, "n/a",
                               s.ollama_max_tokens, False, "ollama")
         model, effort, max_tokens = {
             "triage": (s.claude_triage_model, s.claude_triage_effort, s.claude_triage_max_tokens),
             "architect": (s.claude_architect_model, s.claude_architect_effort, s.claude_architect_max_tokens),
             "automation": (s.claude_automation_model, s.claude_automation_effort, s.claude_automation_max_tokens),
+            "review": (s.claude_review_model, s.claude_review_effort, s.claude_review_max_tokens),
         }[key]
         return AgentRoute(key, label, model, effort, max_tokens, self._cache_enabled(key), "claude")
 
@@ -213,7 +218,7 @@ class LLMRouter:
         if route.provider == "offline":
             return offline.text(route.key, state, messages)
         BUDGET.ensure_available(state["run_id"])
-        response = self.chat_model(route).invoke(messages)
+        response = self.chat_model(route).invoke(messages, config=invoke_config(state, route))
         BUDGET.record(state["run_id"], state["ticket_id"], route.label, token_usage(response),
                       route.model, route.provider)
         _check_stop_reason(route, response)
@@ -230,7 +235,7 @@ class LLMRouter:
             return offline.structured(route.key, state, schema)
         BUDGET.ensure_available(state["run_id"])
         runnable = self.chat_model(route).with_structured_output(schema, method="json_schema", include_raw=True)
-        result = runnable.invoke(messages)
+        result = runnable.invoke(messages, config=invoke_config(state, route))
         raw = result.get("raw")
         BUDGET.record(state["run_id"], state["ticket_id"], route.label, token_usage(raw),
                       route.model, route.provider)
@@ -256,6 +261,22 @@ class LLMRouter:
             if route.model not in MODEL_PRICING:
                 cfg.warning("No price known for %s (%s) - add it via CLAUDE_PRICING_JSON.",
                             route.model, route.label)
+
+
+def invoke_config(state: Dict[str, Any], route: AgentRoute) -> Dict[str, Any]:
+    """
+    LangChain run config for one model call. The Langfuse handler (when tracing is on)
+    records the call as a generation under the current workflow step: model, provider,
+    token usage, latency and the masked prompt/response.
+    """
+    return {
+        "callbacks": TRACER.langchain_callbacks(),
+        "run_name": route.label,
+        "tags": [f"agent:{route.key}", f"provider:{route.provider}"],
+        "metadata": {"run_id": state.get("run_id", ""), "ticket_id": state.get("ticket_id", ""),
+                     "agent": route.key, "provider": route.provider, "model": route.model,
+                     "effort": route.effort},
+    }
 
 
 def _check_stop_reason(route: AgentRoute, message: Any) -> None:

@@ -2,7 +2,7 @@
 import unittest
 import uuid
 
-from taf.agents.graph import qa_graph
+from taf.agents.graph import qa_graph, thread_config
 from taf.integrations.jira.board import get_board
 from taf.runs import stages
 from taf.runs.store import get_store
@@ -51,11 +51,13 @@ class StageRunnerTest(unittest.TestCase):
 class GraphTest(unittest.TestCase):
     def test_full_graph_reaches_closeout(self):
         issue = get_board().issue("TB-601")
+        run_id = uuid.uuid4().hex
         final = qa_graph().invoke({
-            "run_id": uuid.uuid4().hex, "ticket_id": "TB-601", "summary": issue["summary"],
+            "run_id": run_id, "ticket_id": "TB-601", "summary": issue["summary"],
             "description": issue["description"], "target_url": "https://app.example.test",
             "github_diff": "", "environment_logs": "", "n8n_callback_url": "", "errors": [],
-        })
+            "llm_provider": "offline",
+        }, config=thread_config(run_id))
         self.assertIn("## QA Report - TB-601", final["final_report"])
         self.assertFalse(final["callback_delivered"])
         self.assertTrue(any("no n8n_callback_url" in e for e in final["errors"]))

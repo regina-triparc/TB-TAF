@@ -27,6 +27,15 @@ os.environ.update({
     "SOURCE_REPO_URL": "",          # no git/network: PR diffs are skipped with a note
     "TEST_REPO_ENV_FILE": "",
     "QA_DB_PATH": os.path.join(_TMP, "qa_runs.db"),
+    "QA_CHECKPOINT_DB_PATH": os.path.join(_TMP, "qa_checkpoints.db"),
+    "GIT_PUSH_ENABLED": "false",
+    "PR_CREATE_ENABLED": "false",
+    "REQUIRE_APPROVAL": "true",
+    "REVIEW_WITH_LLM": "false",
+    "GITHUB_TOKEN": "",
+    "LANGFUSE_PUBLIC_KEY": "",    # tracing off unless a test turns it on with its own client
+    "LANGFUSE_SECRET_KEY": "",
+    "SPEC_REPAIR_ATTEMPTS": "2",
     "SKILLS_ENABLED": "true",
     "SKILLS_ON_LOCAL": "false",
     "LOG_LEVEL": "WARNING",

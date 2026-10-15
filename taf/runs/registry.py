@@ -9,12 +9,13 @@ import logging
 import threading
 from typing import Any, Dict, Optional
 
-from taf.agents.graph import qa_graph
+from taf.agents.graph import qa_graph, thread_config
 from taf.agents.state import QAState
 from taf.config import redact
 from taf.core.text import utc_now
 from taf.integrations.paperclip.control_room import CONTROL_ROOM
 from taf.llm.budget import BUDGET
+from taf.observability.tracing import TRACER
 
 log = logging.getLogger("qa")
 
@@ -55,7 +56,14 @@ def execute_qa_run(initial_state: QAState) -> None:
     CONTROL_ROOM.emit(run_id, ticket_id, "run.started", summary=initial_state.get("summary", ""),
                       target_url=initial_state.get("target_url", ""))
     try:
-        final: QAState = qa_graph().invoke(initial_state, config={"recursion_limit": 25})
+        with TRACER.run(initial_state, extra_tags=["n8n"]):
+            final: QAState = qa_graph().invoke(initial_state, config=thread_config(run_id))
+        if final.get("__interrupt__"):
+            # Paused at the approval gate; `python -m taf resume <run_id> --approve` (or the
+            # dashboard) continues it, and the closeout then calls n8n back.
+            RUNS.update(run_id, status="waiting_approval", git_branch="", errors=final.get("errors", []))
+            CONTROL_ROOM.emit(run_id, ticket_id, "run.waiting", reason="approval required")
+            return
         outcome = "QA Passed" if final.get("execution_passed") else "QA Failed"
         RUNS.update(
             run_id,
@@ -79,3 +87,4 @@ def execute_qa_run(initial_state: QAState) -> None:
         CONTROL_ROOM.emit(run_id, ticket_id, "run.crashed", error=redact(str(exc)))
     finally:
         BUDGET.release(run_id)
+        TRACER.flush()

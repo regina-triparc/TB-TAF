@@ -99,6 +99,7 @@
   .ph.running  { border-color: var(--warning);  color: var(--text); background: var(--accent-soft); }
   .ph.failed   { border-color: var(--critical); color: var(--critical); }
   .ph.cancelled{ border-color: var(--border);   color: var(--text-mute); }
+  .ph.waiting  { border-color: var(--warning);  color: var(--warning); }
   .ph .ic { font-weight: 700; }
 
   .controls { display: flex; flex-wrap: wrap; gap: 5px; }
@@ -198,8 +199,8 @@
 </div>
 
 <script>
-const PHASES = ["triage", "architect", "automation", "report"];
-const ICON = { ok: "✓", running: "●", failed: "✕", cancelled: "–", pending: "·" };
+const PHASES = ["triage", "architect", "automation", "approval", "publish", "report"];
+const ICON = { ok: "✓", running: "●", failed: "✕", cancelled: "–", pending: "·", waiting: "‖" };
 const STAGES = [["triage","Triage"], ["architect","Architect"], ["automation","Automation"], ["full","Full run"]];
 let busy = new Set();
 let openRun = null;          // run_id whose panel is expanded
@@ -242,6 +243,8 @@ function runLine(run) {
     return `<div class="detail err">failed &middot; ${esc(run.error || "see logs")}</div>`;
   if (run.state === "cancelled")
     return `<div class="detail">cancelled</div>`;
+  if (run.state === "waiting")
+    return `<div class="detail">waiting for approval &middot; expand to review, then approve or reject</div>`;
   return `<div class="detail">${esc(done?.detail || run.outcome || "completed")}</div>`;
 }
 
@@ -290,8 +293,41 @@ function renderAutomation(a) {
         ? (a.xray_files || []).map(f => `<code>${esc(f)}</code>`).join(" ")
         : "-"}</div>`;
   return section("Automation - what it built", head) +
+    renderChecks(a) +
     (a.code ? section("Generated spec", `<pre>${esc(a.code)}</pre>`) : "") +
     (a.log_tail ? section("Playwright output (tail)", `<pre>${esc(a.log_tail)}</pre>`) : "");
+}
+
+function renderChecks(a) {
+  const v = a.validation || {};
+  const checks = (v.checks || []).map(c =>
+    `<li>${c.skipped ? "skipped" : c.ok ? "ok" : "<strong>FAILED</strong>"} &middot; ${esc(c.name)}` +
+    (c.detail && !c.ok ? `<pre>${esc(c.detail)}</pre>` : "") + `</li>`).join("");
+  const findings = ((a.review || {}).findings || []).map(f =>
+    `<li><strong>${esc(f.severity)}</strong> ${esc(f.rule)}: ${esc(f.detail)}</li>`).join("");
+  return section(`Static validation - ${v.skipped ? "skipped" : v.ok ? "passed" : "failed"} (attempts: ${a.spec_attempts || 0})`,
+                 checks ? `<ul>${checks}</ul>` : `<div class="kv">${esc(v.skipped || "no checks")}</div>`) +
+    (findings ? section("Review findings", `<ul>${findings}</ul>`) : "");
+}
+
+function renderApproval(a) {
+  const r = a.request || {}, d = a.decision || {};
+  return section("Approval", `<div class="kv">
+      <strong>Decision:</strong> ${esc(d.status || "waiting")}${d.by ? " by " + esc(d.by) : ""}${d.note ? " - " + esc(d.note) : ""}<br>
+      <strong>Branch:</strong> ${esc(r.branch || "-")} &nbsp; <strong>Push:</strong> ${r.will_push ? "yes" : "no"} &nbsp;
+      <strong>Pull request:</strong> ${r.will_open_pr ? "yes" : "no"}<br>
+      <strong>Validation:</strong> ${r.validation_ok ? "passed" : "failed"} &nbsp;
+      <strong>Playwright:</strong> ${r.playwright_passed ? "passed" : "did not pass"}</div>` +
+      (r.review_findings && r.review_findings.length ? list(r.review_findings) : ""));
+}
+
+function renderPublish(a) {
+  const p = a.publish || {};
+  if (p.skipped) return section("Publish", `<div class="kv">skipped - ${esc(p.skipped)}</div>`);
+  return section("Publish", `<div class="kv">
+      <strong>Branch:</strong> ${esc(p.branch || "-")} &nbsp; <strong>Commit:</strong> ${esc((p.commit_sha || "-").slice(0, 10))}
+      &nbsp; <strong>Pushed:</strong> ${p.pushed ? "yes" : "no"}<br>
+      <strong>Pull request:</strong> ${p.pr_url ? `<a href="${esc(p.pr_url)}" target="_blank" rel="noopener">${esc(p.pr_url)}</a>${p.pr_draft ? " (draft)" : ""}` : "-"}</div>`);
 }
 
 function renderPanel(detail) {
@@ -302,8 +338,11 @@ function renderPanel(detail) {
     if (p.phase === "triage") return renderTriage(a);
     if (p.phase === "architect") return renderArchitect(a);
     if (p.phase === "automation") return renderAutomation(a);
+    if (p.phase === "approval") return renderApproval(a);
+    if (p.phase === "publish") return renderPublish(a);
     if (p.phase === "report" && a.report_markdown)
-      return section("Report", `<pre>${esc(a.report_markdown)}</pre>`);
+      return section("Report", (a.trace_url ? `<div class="kv"><a href="${esc(a.trace_url)}" target="_blank" rel="noopener">Langfuse trace</a></div>` : "") +
+                     `<pre>${esc(a.report_markdown)}</pre>`);
     return "";
   }).filter(Boolean).join("");
   return blocks || '<div class="kv">This run recorded no artifacts (it predates artifact capture, or stopped early).</div>';
@@ -353,7 +392,7 @@ function render(data) {
   const n = s => rows.filter(r => (r.jira.status || "").toLowerCase() === s).length;
   document.getElementById("t-ready").textContent = n("ready for qa");
   document.getElementById("t-inqa").textContent = n("in qa");
-  document.getElementById("t-running").textContent = rows.filter(r => r.run?.state === "running").length;
+  document.getElementById("t-running").textContent = rows.filter(r => r.run?.state === "running" || r.run?.state === "waiting").length;
   document.getElementById("t-failed").textContent = rows.filter(r => r.run?.state === "failed").length;
 
   const tbody = document.getElementById("rows");
@@ -364,13 +403,18 @@ function render(data) {
 
   tbody.innerHTML = rows.map(r => {
     const t = r.jira, run = r.run;
-    const running = run?.state === "running";
+    const running = run?.state === "running" || run?.state === "waiting";
     const disabled = running || busy.has(t.key) ? "disabled" : "";
     const buttons = STAGES.map(([id, label]) =>
       `<button ${disabled} data-ticket="${esc(t.key)}" data-stage="${id}"
          ${id === "full" ? 'class="primary"' : ""}>${label}</button>`).join("");
-    const cancel = running
+    const cancel = run?.state === "running"
       ? `<button class="danger" data-cancel="${esc(run.run_id)}">Cancel</button>` : "";
+    const decide = run?.state === "waiting"
+      ? `<button class="primary" data-decide="${esc(run.run_id)}" data-approved="1">Approve</button>
+         <button class="danger" data-decide="${esc(run.run_id)}" data-approved="0">Reject</button>` : "";
+    const resume = (run?.state === "failed" || run?.state === "cancelled")
+      ? `<button data-resume="${esc(run.run_id)}" title="continue from the last completed step">Resume</button>` : "";
     const expanded = run && openRun === run.run_id;
     const expander = run
       ? `<button class="expander" data-expand="${esc(run.run_id)}">${expanded ? "▾ hide" : "▸ what the agent did"}</button>`
@@ -383,7 +427,7 @@ function render(data) {
           <div class="meta">${esc(t.type)}${t.priority ? " &middot; " + esc(t.priority) : ""}${t.assignee ? " &middot; " + esc(t.assignee) : ""}</div></td>
       <td class="hide-sm">${esc(t.status)}</td>
       <td><div class="phases">${phaseStrip(run)}</div>${runLine(run)}${expander}</td>
-      <td><div class="controls">${buttons}${cancel}</div></td>
+      <td><div class="controls">${decide}${buttons}${cancel}${resume}</div></td>
     </tr>${panel}`;
   }).join("");
 }
@@ -405,6 +449,27 @@ document.addEventListener("click", async (ev) => {
     const id = exp.dataset.expand;
     if (openRun === id) { openRun = null; openDetail = null; load(); }
     else { openRun = id; openDetail = null; load(); loadDetail(id); }
+    return;
+  }
+  const decideBtn = ev.target.closest("button[data-decide]");
+  const resumeBtn = ev.target.closest("button[data-resume]");
+  if (decideBtn || resumeBtn) {
+    const runId = decideBtn ? decideBtn.dataset.decide : resumeBtn.dataset.resume;
+    let url = "/dashboard/api/resume/" + runId, body = {};
+    if (decideBtn) {
+      const approved = decideBtn.dataset.approved === "1";
+      const note = approved ? "" : (prompt("Why is it rejected? (recorded with the run)") ?? "");
+      url = "/dashboard/api/decide/" + runId;
+      body = { approved, by: "dashboard", note };
+    }
+    try {
+      const res = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" },
+                                     body: JSON.stringify(body) });
+      const out = await res.json();
+      if (!res.ok) throw new Error(out.detail || ("HTTP " + res.status));
+      toast(decideBtn ? (body.approved ? "Approved - publishing" : "Rejected - nothing is published") : "Resumed");
+    } catch (e) { toast(e.message, true); }
+    load();
     return;
   }
   const start = ev.target.closest("button[data-stage]");

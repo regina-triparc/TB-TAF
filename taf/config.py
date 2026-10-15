@@ -134,6 +134,37 @@ class Settings:
     # Markdown file of REAL roles/names captured from the app under test.
     page_contract_path: str = field(default_factory=lambda: env_str("PAGE_CONTRACT_PATH"))
 
+    # --- Workflow: checkpoints, review, approval, pull request ---------------
+    # LangGraph checkpoints (one thread per run) so a run can resume after a crash or
+    # an approval wait. A separate file: qa_runs.db keeps its schema untouched.
+    qa_checkpoint_db_path: str = field(default_factory=lambda: env_str("QA_CHECKPOINT_DB_PATH", "qa_checkpoints.db"))
+    # Pause before anything leaves the machine (push / pull request) until a person approves.
+    require_approval: bool = field(default_factory=lambda: env_bool("REQUIRE_APPROVAL", True))
+    # Open a pull request in the test repository after an approved push. Needs GITHUB_TOKEN
+    # (pull requests: read and write) or a signed-in GitHub CLI (gh).
+    pr_create_enabled: bool = field(default_factory=lambda: env_bool("PR_CREATE_ENABLED", False))
+    # Optional LLM review of the generated spec (conventions, maintainability). Off by default.
+    review_with_llm: bool = field(default_factory=lambda: env_bool("REVIEW_WITH_LLM", False))
+    claude_review_model: str = field(default_factory=lambda: env_str("CLAUDE_REVIEW_MODEL", "claude-sonnet-5-5"))
+    claude_review_effort: str = field(default_factory=lambda: env_str("CLAUDE_REVIEW_EFFORT", "medium"))
+    claude_review_max_tokens: int = field(default_factory=lambda: env_int("CLAUDE_REVIEW_MAX_TOKENS", 16_000))
+    ollama_review_model: str = field(default_factory=lambda: env_str("OLLAMA_REVIEW_MODEL"))
+    # How much of the test repository's conventions (config, fixtures, page objects) the
+    # Automation Engineer is shown.
+    repo_context_max_chars: int = field(default_factory=lambda: env_int("REPO_CONTEXT_MAX_CHARS", 6000))
+
+    # --- Langfuse (optional LLM observability) --------------------------------
+    langfuse_public_key: str = field(default_factory=lambda: env_str("LANGFUSE_PUBLIC_KEY"))
+    langfuse_secret_key: str = field(default_factory=lambda: env_str("LANGFUSE_SECRET_KEY"))
+    langfuse_base_url: str = field(default_factory=lambda: env_str("LANGFUSE_BASE_URL", env_str("LANGFUSE_HOST")))
+    langfuse_enabled: bool = field(default_factory=lambda: env_bool("LANGFUSE_ENABLED", True))
+    langfuse_environment: str = field(default_factory=lambda: env_str("LANGFUSE_ENVIRONMENT", "local"))
+    # metadata = no prompt/response text; truncated = text cut to LANGFUSE_MAX_FIELD_CHARS; full.
+    langfuse_capture: str = field(default_factory=lambda: env_str("LANGFUSE_CAPTURE", "truncated").lower())
+    langfuse_max_field_chars: int = field(default_factory=lambda: env_int("LANGFUSE_MAX_FIELD_CHARS", 4000))
+    langfuse_timeout_s: int = field(default_factory=lambda: env_int("LANGFUSE_TIMEOUT_SECONDS", 5))
+    langfuse_flush_timeout_s: int = field(default_factory=lambda: env_int("LANGFUSE_FLUSH_TIMEOUT_SECONDS", 10))
+
     # --- Budget / Paperclip Control Room -----------------------------------
     max_cloud_tokens_per_run: int = field(default_factory=lambda: env_int("MAX_CLOUD_TOKENS_PER_RUN", 250_000))
     max_cloud_tokens_per_day: int = field(default_factory=lambda: env_int("MAX_CLOUD_TOKENS_PER_DAY", 2_000_000))
@@ -197,7 +228,7 @@ class Settings:
     def secrets(self) -> List[str]:
         """Values that must never appear in logs, reports or subprocess output."""
         candidates = (self.github_token, self.anthropic_api_key, self.paperclip_api_key,
-                      self.xray_client_secret, os.getenv("JIRA_API_TOKEN", "").strip())
+                      self.xray_client_secret, self.langfuse_secret_key, os.getenv("JIRA_API_TOKEN", "").strip())
         return [s for s in candidates if s and len(s) >= 8]
 
 

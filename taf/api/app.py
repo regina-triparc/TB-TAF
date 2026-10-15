@@ -30,6 +30,7 @@ from taf.integrations.github.repository import TEST_REPO
 from taf.integrations.jira.board import get_board
 from taf.integrations.paperclip.control_room import CONTROL_ROOM
 from taf.llm.router import ROUTER
+from taf.observability.tracing import TRACER
 from taf.runs.registry import RUNS, execute_qa_run
 from taf.runs.store import get_store
 
@@ -94,7 +95,9 @@ async def lifespan(_app: FastAPI):
     log.info("LLM provider: %s -> %s", ROUTER.default_provider, ROUTER.resolve())
     log.info("Dashboard at /dashboard on this server (http://%s:%s/dashboard unless --port overrides PORT)",
              SETTINGS.host, SETTINGS.port)
+    log.info("Langfuse tracing %s", TRACER.status)
     yield
+    TRACER.shutdown()  # bounded: an unreachable Langfuse cannot hold up the shutdown
 
 
 app = FastAPI(
