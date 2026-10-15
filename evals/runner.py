@@ -212,7 +212,8 @@ def run_case(case: Dict[str, Any], provider: str, last_stage: str,
                         checks.insert(0, graders.check("spec parses", False, problem, dimension="typescript"))
                     if opts.with_repo and code:
                         repo = _repo_checks(state, code, opts.execute)
-                        checks += graders.grade_repo_checks(repo["checks"])
+                        seen = {c["name"] for c in checks}  # the static checks are already graded above
+                        checks += graders.grade_repo_checks([r for r in repo["checks"] if r["name"] not in seen])
                         if repo["passed"] is not None:
                             checks.append(graders.check("generated tests pass", repo["passed"],
                                                         "a pass is not proof of coverage", hard=False,

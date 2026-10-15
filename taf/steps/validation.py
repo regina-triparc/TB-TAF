@@ -73,7 +73,8 @@ def package_names(repo_root: Optional[Path]) -> Set[str]:
 
 def code_checks(code: str, spec_rel: str, repo_root: Optional[Path]) -> List[Check]:
     """Checks that need no tools: safety and import resolution. `repo_root` None skips resolution."""
-    checks = [check("spec has tests", bool(re.search(r"\btest\s*\(", code)), "no `test(` block found")]
+    has_tests = bool(re.search(r"\btest\s*\(", code))
+    checks = [check("spec has tests", has_tests, "" if has_tests else "no `test(` block found")]
     specifiers = imports(code)
     unsafe = [s for s in specifiers if s.removeprefix("node:") in _NODE_BUILTINS or s.startswith("node:")]
     unsafe += [label for pattern, label in _DANGEROUS if pattern.search(code)]
