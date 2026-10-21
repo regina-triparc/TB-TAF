@@ -1,16 +1,17 @@
 """
 The LangGraph workflow for one ticket. Agents (LLM) and deterministic steps:
 
-    gather_context ─▶ intake_triager ─▶ test_architect ─▶ repo_context ─▶ generate_spec ◀──────┐
-         (git)            (LLM)             (LLM)          (git, read)        (LLM)            │
-                                                                                 │             │ repair while
-                                                                                 ▼             │ attempts remain
-                                                                           validate_spec ──────┤ (retryable failure,
-                                                                                 │ ok          │  or a review blocker)
-                                                                                 ▼             │
-                                                                run_tests ─▶ review_spec ──────┘
-                                                                                 │
-                                                       approval_gate (interrupt) ┘
+    gather_context ─▶ intake_triager ─▶ test_architect ─▶ repo_context ─▶ ui_snapshot ─▶ generate_spec ◀──────┐
+         (git)            (LLM)             (LLM)          (git, read)   (live app, read)     (LLM)            │
+                                                                                                 │             │ repair while
+                                                                                                 ▼             │ attempts remain
+                                                                                           validate_spec ──────┤ (retryable failure,
+                                                                                                 │ ok          │  or a review blocker)
+                                                                                                 ▼             │
+                                                                run_tests ─▶ repair_from_run ─▶ review_spec ───┘
+                                                                              (LLM + rerun of the        │
+                                                                               failing tests, guarded)   │
+                                                                       approval_gate (interrupt) ────────┘
                                                                  │ approved / not required
                                                               publish ─▶ report_synthesizer ─▶ closeout
 
@@ -39,6 +40,8 @@ from taf.config import SETTINGS, project_path
 from taf.steps.context import gather_context, repo_context
 from taf.steps.publish import approval_gate, has_output, publish
 from taf.steps.review import review_spec
+from taf.steps.run_repair import repair_from_run
+from taf.steps.ui_snapshot import ui_snapshot
 from taf.steps.validation import run_tests, validate_spec
 
 # Graph node -> the phase the dashboard and run history show it under.
@@ -47,9 +50,11 @@ NODE_PHASE: Dict[str, str] = {
     "intake_triager": "triage",
     "test_architect": "architect",
     "repo_context": "automation",
+    "ui_snapshot": "automation",
     "generate_spec": "automation",
     "validate_spec": "automation",
     "run_tests": "automation",
+    "repair_from_run": "automation",
     "review_spec": "automation",
     "approval_gate": "approval",
     "publish": "publish",
@@ -113,8 +118,9 @@ def build_graph(checkpointer: Any = None):
     graph = StateGraph(QAState)
     for name, fn in (("gather_context", gather_context), ("intake_triager", intake_triager),
                      ("test_architect", test_architect), ("repo_context", repo_context),
-                     ("generate_spec", generate_spec), ("validate_spec", validate_spec),
-                     ("run_tests", run_tests), ("review_spec", review_spec),
+                     ("ui_snapshot", ui_snapshot), ("generate_spec", generate_spec),
+                     ("validate_spec", validate_spec), ("run_tests", run_tests),
+                     ("repair_from_run", repair_from_run), ("review_spec", review_spec),
                      ("approval_gate", approval_gate), ("publish", publish),
                      (REPORT, report_synthesizer), ("closeout", closeout)):
         graph.add_node(name, fn)
@@ -125,10 +131,12 @@ def build_graph(checkpointer: Any = None):
                                 ["test_architect", REPORT, END])
     graph.add_conditional_edges("test_architect", _after_agent("architect", "repo_context"),
                                 ["repo_context", REPORT, END])
-    graph.add_edge("repo_context", "generate_spec")
+    graph.add_edge("repo_context", "ui_snapshot")
+    graph.add_edge("ui_snapshot", "generate_spec")
     graph.add_conditional_edges("generate_spec", _after_generate, ["validate_spec", REPORT, END])
     graph.add_conditional_edges("validate_spec", _after_validate, ["run_tests", "generate_spec", REPORT, END])
-    graph.add_edge("run_tests", "review_spec")
+    graph.add_edge("run_tests", "repair_from_run")
+    graph.add_edge("repair_from_run", "review_spec")
     graph.add_conditional_edges("review_spec", _after_review, ["generate_spec", "approval_gate", REPORT, END])
     graph.add_conditional_edges("approval_gate", _after_approval, ["publish", REPORT])
     graph.add_edge("publish", REPORT)

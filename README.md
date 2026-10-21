@@ -487,11 +487,11 @@ models think adaptively, and thinking depth is controlled with `effort`.
 ### LangGraph pipeline
 
 ```
-gather_context → intake_triager → test_architect → repo_context → generate_spec ◀─────────┐
+gather_context → intake_triager → test_architect → repo_context → ui_snapshot → generate_spec ◀──┐
                                                                        │                  │ fixable failure /
                                                                  validate_spec ───────────┤ review blocker,
                                                                        │ ok               │ attempts left
-                                                         run_tests → review_spec ─────────┘
+                                       run_tests → repair_from_run → review_spec ─────────┘
                                                                        │
                                                   approval_gate (pauses) → publish → report_synthesizer → closeout
 ```

@@ -133,6 +133,18 @@ class Settings:
     skip_dependency_install: bool = field(default_factory=lambda: env_bool("SKIP_DEPENDENCY_INSTALL", False))
     # Markdown file of REAL roles/names captured from the app under test.
     page_contract_path: str = field(default_factory=lambda: env_str("PAGE_CONTRACT_PATH"))
+    # Live accessibility snapshot of the app, taken before the spec is written
+    # (taf/steps/ui_snapshot.py). The recipe defaults to the page contract's
+    # `<name>.snapshot.json`; the step skips itself when the recipe or the saved
+    # session is missing.
+    live_snapshot_enabled: bool = field(default_factory=lambda: env_bool("LIVE_SNAPSHOT_ENABLED", True))
+    live_snapshot_recipe: str = field(default_factory=lambda: env_str("LIVE_SNAPSHOT_RECIPE"))
+    live_snapshot_max_chars: int = field(default_factory=lambda: env_int("LIVE_SNAPSHOT_MAX_CHARS", 12_000))
+    live_snapshot_timeout_s: int = field(default_factory=lambda: env_int("LIVE_SNAPSHOT_TIMEOUT_SECONDS", 420))
+    # Repairs driven by the Playwright run itself (taf/steps/run_repair.py): failing
+    # tests go back to the Automation Engineer with their error and page snapshot.
+    # 0 turns it off. A repair that weakens a test is rejected.
+    run_repair_attempts: int = field(default_factory=lambda: env_int("RUN_REPAIR_ATTEMPTS", 2))
 
     # --- Workflow: checkpoints, review, approval, pull request ---------------
     # LangGraph checkpoints (one thread per run) so a run can resume after a crash or
@@ -151,7 +163,7 @@ class Settings:
     ollama_review_model: str = field(default_factory=lambda: env_str("OLLAMA_REVIEW_MODEL"))
     # How much of the test repository's conventions (config, fixtures, page objects) the
     # Automation Engineer is shown.
-    repo_context_max_chars: int = field(default_factory=lambda: env_int("REPO_CONTEXT_MAX_CHARS", 6000))
+    repo_context_max_chars: int = field(default_factory=lambda: env_int("REPO_CONTEXT_MAX_CHARS", 14_000))
 
     # --- Langfuse (optional LLM observability) --------------------------------
     langfuse_public_key: str = field(default_factory=lambda: env_str("LANGFUSE_PUBLIC_KEY"))

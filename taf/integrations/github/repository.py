@@ -556,17 +556,43 @@ class TestRepository:
         rel = [p.resolve().relative_to(root).as_posix() for p in paths]
         return run_command(self._exec("eslint", *rel), cwd=self.path, timeout_s=300, env=self._pw_env(target_url))
 
-    def run_playwright(self, spec_path: Path, target_url: str, logs: List[str]) -> bool:
-        """`pnpm exec playwright test <spec>`. Returns True only if all tests pass."""
+    def run_playwright(self, spec_path: Path, target_url: str, logs: List[str],
+                       json_report: Optional[Path] = None, lines: Optional[List[int]] = None) -> bool:
+        """
+        `pnpm exec playwright test <spec>`. Returns True only if all tests pass.
+        `json_report` also writes Playwright's JSON report there (per-test results);
+        `lines` runs only the tests that start on those lines (`<spec>:<line>`). Locations,
+        not a --grep pattern: on Windows npm.cmd runs through cmd.exe, which reads `|` as a pipe.
+        """
         assert self.path is not None
         rel_spec = spec_path.resolve().relative_to(self.path.resolve()).as_posix()
+        targets = [f"{rel_spec}:{n}" for n in sorted(set(lines))] if lines else [rel_spec]
         extra = self.settings.playwright_extra_args.split() if self.settings.playwright_extra_args else []
+        env = self._pw_env(target_url)
+        if json_report is not None:
+            extra = with_json_reporter(extra)
+            json_report.parent.mkdir(parents=True, exist_ok=True)
+            json_report.unlink(missing_ok=True)
+            env["PLAYWRIGHT_JSON_OUTPUT_NAME"] = str(json_report)
         test = run_command(
-            self._exec("playwright", "test", rel_spec, *extra),
-            cwd=self.path, timeout_s=self.settings.playwright_timeout_s, env=self._pw_env(target_url),
+            self._exec("playwright", "test", *targets, *extra),
+            cwd=self.path, timeout_s=self.settings.playwright_timeout_s, env=env,
         )
         logs.append(test.as_log())
         return test.ok
+
+
+def with_json_reporter(args: List[str]) -> List[str]:
+    """Add Playwright's `json` reporter next to whichever reporter the arguments choose."""
+    out, found = [], False
+    for arg in args:
+        if arg.startswith("--reporter="):
+            found = True
+            reporters = arg.split("=", 1)[1].split(",")
+            if "json" not in reporters:
+                arg = f"--reporter={','.join(reporters + ['json'])}"
+        out.append(arg)
+    return out if found else out + ["--reporter=line,json"]
 
 
 TEST_REPO = TestRepository(SETTINGS)

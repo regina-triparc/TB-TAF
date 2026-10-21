@@ -35,6 +35,10 @@ _TC_RE = re.compile(r"\[(TC-\d+)\]")
 _RAW_LOCATOR_RE = re.compile(r"\.locator\(\s*['\"`](?![a-z]+=)([^'\"`]+)['\"`]")
 _SEMANTIC_RE = re.compile(r"\.getBy(Role|Label|Text|TestId|Placeholder|AltText|Title)\(")
 _SECRET_RE = re.compile(r"(?i)(password|passwd|secret|token|api[_-]?key)\s*[:=]\s*['\"][^'\"]{4,}['\"]")
+_TOP_LEVEL_FN_RE = re.compile(r"^(?:export\s+)?(?:async\s+)?function\s+(\w+)", re.MULTILINE)
+_UNNAMED_ROLE_RE = re.compile(r"\bpage\.getByRole\(\s*['\"](\w+)['\"]\s*\)")
+_TWELVE_HOUR_OPTION_RE = re.compile(
+    r"(?:pickTime\([^)]*?|getByRole\(\s*['\"]option['\"]\s*,\s*\{\s*name:\s*)['\"](\d{1,2}:\d{2}\s?[AP]M)['\"]", re.I)
 
 
 def finding(severity: str, rule: str, detail: str) -> Finding:
@@ -94,6 +98,22 @@ def rule_review(code: str, cases: List[Dict[str, Any]], criteria: List[str],
     uncovered = [f"AC-{n}" for n in range(1, len(criteria) + 1) if n not in covered]
     if criteria and has_refs and uncovered:
         out.append(finding("major", "criteria coverage", f"criteria no test case references: {uncovered}"))
+
+    helpers = _TOP_LEVEL_FN_RE.findall(code)
+    if helpers:
+        out.append(finding("major", "lean spec", f"{len(helpers)} helper function(s) in the spec "
+                                                 f"({', '.join(helpers[:6])}) - use or extend a page object"))
+    # Landmarks occur once per page, so an unnamed one is unambiguous.
+    unnamed = sorted(set(_UNNAMED_ROLE_RE.findall(code)) - {"main", "banner", "contentinfo", "navigation"})
+    if unnamed:
+        out.append(finding("major", "named, scoped locators",
+                           f"page.getByRole({', '.join(repr(r) for r in unnamed)}) has no name and no scope - "
+                           "it matches every such element on the page"))
+    twelve_hour = sorted(set(_TWELVE_HOUR_OPTION_RE.findall(code)))
+    if twelve_hour:
+        out.append(finding("major", "option values from the UI",
+                           f"picks {twelve_hour} - check the option format in the live snapshot "
+                           "(the Info time pickers list 24-hour HH:mm)"))
 
     raw = _RAW_LOCATOR_RE.findall(code)
     semantic = len(_SEMANTIC_RE.findall(code))

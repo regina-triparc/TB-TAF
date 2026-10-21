@@ -35,6 +35,9 @@ SYSTEM_PROMPT = load_prompt(__file__, "prompt.md")
 
 REPAIR_PROMPT = load_prompt(__file__, "repair-prompt.md")
 
+# The turn taf/steps/run_repair.py sends when tests fail at run time.
+RUN_REPAIR_PROMPT = load_prompt(__file__, "run-repair-prompt.md")
+
 OFFLINE_LOG = ("[info] Offline provider: placeholder spec and test cases generated and NOT "
                "written to the test repository; Playwright was not run. Switch the provider "
                "to claude or ollama for a real run.")
@@ -80,12 +83,18 @@ def page_contract_block() -> str:
         return ""
     header = ("\n\n## Page contract - REAL selectors from the live app\n"
               "These are authoritative. Use these roles and names verbatim; do not invent others.\n\n")
-    return header + truncate_middle(text, 8000)
+    return header + truncate_middle(text, 12_000)
 
 
 def repo_conventions_block(state: QAState) -> str:
     """The test repository's conventions (page objects, fixtures, example spec) from repo_context."""
     text = (state.get("repo_context") or {}).get("prompt") or ""
+    return f"\n\n{text}" if text else ""
+
+
+def live_snapshot_block(state: QAState) -> str:
+    """The app's live accessibility tree from the ui_snapshot step, when it was captured."""
+    text = (state.get("live_snapshot") or {}).get("prompt") or ""
     return f"\n\n{text}" if text else ""
 
 
@@ -113,7 +122,7 @@ Spec file: {SETTINGS.test_spec_dir.strip('/')}/{state['ticket_id']}.spec.ts
 ## Diff (for selectors, routes and copy text)
 ```diff
 {diff_for_prompt(state, 1 / 2, route.provider)}
-```{repo_conventions_block(state)}{page_contract_block()}"""
+```{repo_conventions_block(state)}{live_snapshot_block(state)}{page_contract_block()}"""
     system = SYSTEM_PROMPT + skills_prompt("automation", route.provider)
     return [SystemMessage(content=system), ROUTER.context_message(route, prompt)]
 

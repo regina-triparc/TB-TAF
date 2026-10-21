@@ -24,7 +24,13 @@ from taf.llm.router import ROUTER
 
 _SKIP_DIRS = {"node_modules", ".git", "test-results", "playwright-report", "test-artifacts", "blob-report", ".auth"}
 _CLASS_RE = re.compile(r"export\s+(?:default\s+)?class\s+(\w+)")
-_METHOD_RE = re.compile(r"^\s+(?:public\s+)?(?:async\s+)?(\w+)\s*\([^)]*\)\s*(?::\s*[^{]+)?\{", re.MULTILINE)
+_METHOD_RE = re.compile(r"^\s+(?:public\s+)?(?:async\s+)?(?:(get)\s+)?(\w+)\s*\(([^)]*)\)\s*(?::\s*([^{]+?))?\s*\{",
+                        re.MULTILINE)
+_READONLY_RE = re.compile(r"^\s+(?:public\s+)?readonly\s+(\w+)\s*:", re.MULTILINE)
+# A page object whose header comment says it was checked against the live app: that
+# comment is its locator map, and is passed to the Automation Engineer verbatim.
+_VERIFIED_DOC_RE = re.compile(r"/\*\*((?:(?!\*/).)*?Verified against(?:(?!\*/).)*?)\*/", re.DOTALL)
+_PRIVATE_RE = re.compile(r"^\s+private\s+(?:async\s+)?(?:readonly\s+)?(\w+)", re.MULTILINE)
 _EXPORT_FN_RE = re.compile(r"export\s+(?:async\s+)?(?:function|const)\s+(\w+)")
 _EXTEND_RE = re.compile(r"export\s+const\s+(\w+)\s*=\s*\w+\.extend")
 _PROJECT_RE = re.compile(r"name:\s*['\"]([^'\"]+)['\"]")
@@ -71,6 +77,20 @@ def _read(path: Path, limit: int = 20_000) -> str:
         return ""
 
 
+def _signature(getter: str, name: str, params: str, returns: str) -> str:
+    """`openAddInfo(dayLabel: string): Promise<InfoFormPage>`, or `tabs: Locator` for a getter."""
+    returns = re.sub(r"\s+", " ", returns or "").strip()
+    if getter:
+        return f"{name}: {returns}" if returns else name
+    params = re.sub(r"\s+", " ", params).strip()
+    sig = f"{name}({params})" + (f": {returns}" if returns else "")
+    return sig if len(sig) <= 110 else f"{name}(...)" + (f": {returns}" if returns else "")
+
+
+def _member_name(member: str) -> str:
+    return re.match(r"\w+", member).group(0) if re.match(r"\w+", member) else member
+
+
 def _import_path(spec_dir: Path, target: Path) -> str:
     """The relative module specifier a spec in `spec_dir` would use for `target`."""
     text = Path(os.path.relpath(target.with_suffix(""), spec_dir)).as_posix()
@@ -101,9 +121,25 @@ def scan_repository(root: Path, spec_dir_rel: str) -> Dict[str, Any]:
         classes = _CLASS_RE.findall(text)
         if not classes:
             continue
-        methods = [m for m in dict.fromkeys(_METHOD_RE.findall(text)) if m not in _NOT_METHODS][:12]
-        page_objects.append({"path": rel, "import": _import_path(spec_dir, path), "classes": classes,
-                             "methods": methods})
+        private = set(_PRIVATE_RE.findall(text))
+        members = [name for name in _READONLY_RE.findall(text)]
+        # Signatures, not bare names: a model that sees `dayTitle` alone calls `.innerText()`
+        # on what is really a Promise<string>.
+        members += [_signature(getter, name, params, returns) for getter, name, params, returns in _METHOD_RE.findall(text)]
+        methods = [m for m in dict.fromkeys(members)
+                   if _member_name(m) not in _NOT_METHODS and _member_name(m) not in private][:30]
+        ctor = re.search(r"^\s+constructor\s*\(([^)]*)\)", text, re.MULTILINE)
+        if ctor:
+            params = re.sub(r"\s+", " ", re.sub(r"\b(?:private|public|protected|readonly)\s+", "", ctor.group(1)))
+            params = params.strip().rstrip(",").strip()
+            methods.insert(0, f"new {classes[0]}({params})")
+        entry: Dict[str, Any] = {"path": rel, "import": _import_path(spec_dir, path), "classes": classes,
+                                 "methods": methods}
+        verified = _VERIFIED_DOC_RE.search(text)
+        if verified:
+            doc = "\n".join(line.strip().removeprefix("*").rstrip() for line in verified.group(1).splitlines())
+            entry["doc"] = truncate_middle(doc.strip(), 1600)
+        page_objects.append(entry)
     facts["page_objects"] = page_objects[:40]
 
     fixtures = []
@@ -144,8 +180,14 @@ def render_repo_context(facts: Dict[str, Any], limit: int) -> str:
              f"Spec folder: `{facts.get('spec_dir')}`. Playwright config: `{facts.get('playwright_config') or '-'}`;"
              f" projects: {', '.join(facts.get('projects') or []) or '-'}."]
     if facts.get("page_objects"):
+        # Verified ones first: they are the most useful part, and the section is truncated from the middle.
+        verified = [po for po in facts["page_objects"] if po.get("doc")]
+        if verified:
+            lines += ["", "### Verified page objects - what they wrap (checked against the live app)"]
+            for po in verified:
+                lines += ["", f"`{', '.join(po['classes'])}` (`{po['path']}`):", "```", po["doc"], "```"]
         lines += ["", "### Page objects (import with the path shown; reuse instead of raw locators)"]
-        for po in facts["page_objects"]:
+        for po in sorted(facts["page_objects"], key=lambda po: not po.get("doc")):
             methods = f" - {', '.join(po['methods'])}" if po.get("methods") else ""
             lines.append(f"- `import {{ {', '.join(po['classes'])} }} from '{po['import']}'`{methods}")
     if facts.get("fixtures"):

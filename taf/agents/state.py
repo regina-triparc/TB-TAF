@@ -40,6 +40,9 @@ class QAState(TypedDict, total=False):
     # --- Workflow (taf/agents/graph.py) ---------------------------------------
     stop_after: str                     # triage | architect | automation | report; "" = through closeout
     repo_context: Dict[str, Any]        # the test repo's conventions: config, fixtures, page objects
+    live_snapshot: Dict[str, Any]       # live accessibility tree of the app: {"available", "captured", "prompt"}
+    playwright: Dict[str, Any]          # last run: {"passed", "counts", "tests": [{"title", "tc", "status", "error"}]}
+    run_repair: Dict[str, Any]          # repairs from the run: {"attempts": [...], "accepted", "before", "after"}
     spec_attempts: int                  # generations so far (1 + repairs)
     spec_feedback: str                  # why the last spec was rejected - the next repair's input
     validation: Dict[str, Any]          # deterministic checks: {"ok", "retryable", "checks": [...]}

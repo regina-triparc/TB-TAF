@@ -31,6 +31,7 @@ from taf.integrations.github.repository import REPO_LOCK, TEST_REPO, CommandErro
 from taf.integrations.jira import xray
 from taf.llm.router import ROUTER
 from taf.steps.context import append_log, repo_available
+from taf.steps.playwright_results import counts as test_counts, parse_json_report, report_path
 
 Check = Dict[str, Any]
 
@@ -223,11 +224,12 @@ def run_tests(state: QAState) -> Dict[str, Any]:
     ticket_id = state["ticket_id"]
     logs: List[str] = []
     passed = False
+    report = report_path(state["run_id"], "run")
     with REPO_LOCK:
         try:
             with TEST_REPO.ticket_files_on_base(ticket_id, code, xray.ticket_dir(ticket_id), {}, logs) as (spec, _):
                 assert spec is not None
-                passed = TEST_REPO.run_playwright(spec, state.get("target_url", ""), logs)
+                passed = TEST_REPO.run_playwright(spec, state.get("target_url", ""), logs, json_report=report)
         except CommandError as exc:
             if exc.result is not None:
                 logs.append(exc.result.as_log())
@@ -235,5 +237,7 @@ def run_tests(state: QAState) -> Dict[str, Any]:
             return {"execution_passed": False, "execution_logs": append_log(state, logs),
                     "errors": [f"Playwright Runner: {exc}"]}
     log_text = append_log(state, logs)
+    tests = parse_json_report(report)
     return {"execution_passed": passed, "execution_logs": log_text,
-            "playwright": {"passed": passed, "counts": parse_playwright_counts("\n".join(logs))}}
+            "playwright": {"passed": passed, "counts": test_counts(tests) or parse_playwright_counts("\n".join(logs)),
+                           "tests": tests}}
