@@ -97,12 +97,35 @@ cd C:\code\TB-TAF; copy .env.example .env
 The defaults are right for the demo. Only choose the model:
 
 - **Claude:** put `ANTHROPIC_API_KEY=...` in `.env` (`LLM_PROVIDER=auto` then uses it).
-- **Ollama:** leave the key empty, and set `OLLAMA_MODEL=qwen2.5-coder:3b` (or
-  the 7b you pulled). Then pull the model:
+- **Ollama:** leave the key empty. Pull the model:
 
 ```powershell
 ollama pull qwen2.5-coder:3b
 ```
+
+Then set these in `.env`. They are not secret; they are the tuning the demo was run
+with on a laptop:
+
+```ini
+LLM_PROVIDER=ollama
+OLLAMA_MODEL=qwen2.5-coder:3b
+OLLAMA_TIMEOUT_SECONDS=1800
+OLLAMA_MAX_TEST_CASES=2
+SPEC_REPAIR_ATTEMPTS=1
+MAX_ENV_LOG_CHARS=4000
+MAX_EXEC_LOG_CHARS_FOR_LLM=8000
+```
+
+| Setting | Why |
+|---|---|
+| `OLLAMA_MODEL` | Must match the model you pulled, or every call fails. |
+| `OLLAMA_TIMEOUT_SECONDS` | A step takes about 2 minutes on a laptop, longer with little free RAM; the default 300 s can time out. |
+| `OLLAMA_MAX_TEST_CASES` | Caps the test plan at 2 cases, to keep the run short. Raise it (e.g. 5) for more coverage at the cost of time. |
+| `SPEC_REPAIR_ATTEMPTS` | One retry if the spec won't load, instead of two. |
+| `MAX_*_LOG_CHARS*` | Keep logs sent to the local model inside its 4k-token context. |
+
+No secret from TB-TAF's `.env` is needed for the demo. The Jira and service API
+keys are only for the real Jira flow and the optional n8n integration.
 
 The script creates the Python environment and installs everything else on its
 first run.
@@ -187,8 +210,10 @@ not a verdict. With the local model, check in particular:
 - **Test cases against known defects.** TB-601 lists "no start/end time
   validation" as a known open defect. A test plan that asserts validation should
   have that case removed in review.
-- **Coverage.** A 3B model usually plans 2 cases for TB-601's ~13 criteria;
-  Claude plans many more.
+- **Coverage.** With `OLLAMA_MAX_TEST_CASES=2` the plan has 2 cases for TB-601's
+  ~13 criteria, by design. A higher cap gives more cases, but a 3B model's cases
+  get weaker and slower as the plan grows. On Claude there is no cap, and the
+  prompt asks for 6–20.
 - **Selectors.** Generated selectors are only as good as the page contract
   (`skills/page-contracts/tripbuilder-tsp.md`).
 

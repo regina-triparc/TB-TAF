@@ -111,6 +111,20 @@ def cmd_doctor(_args: argparse.Namespace) -> int:
         check(bool(shutil.which(tool)), f"{tool} on PATH", f"{tool} not on PATH (needed for the automation stage)",
               fatal=False)
 
+    _out("info", f"Workflow: approval {'required' if SETTINGS.require_approval else 'not required'}; "
+                 f"push {'on' if SETTINGS.git_push_enabled else 'off'}; pull requests "
+                 f"{'on' if SETTINGS.pr_create_enabled else 'off'}; checkpoints in {SETTINGS.qa_checkpoint_db_path}")
+    if SETTINGS.pr_create_enabled:
+        check(bool(SETTINGS.github_token or shutil.which("gh")), "pull requests: GITHUB_TOKEN or gh available",
+              "PR_CREATE_ENABLED=true needs GITHUB_TOKEN or a signed-in GitHub CLI (gh)", fatal=False)
+    from taf.observability.tracing import TRACER
+    if TRACER.enabled:
+        ok, why = TRACER.check()
+        check(ok, f"Langfuse tracing on ({SETTINGS.langfuse_base_url or 'cloud default'}): {why}",
+              f"Langfuse configured but {why} - runs continue untraced", fatal=False)
+    else:
+        _out("info", f"Langfuse tracing {TRACER.status}")
+
     if SETTINGS.page_contract_path:
         check(project_path(SETTINGS.page_contract_path).is_file(), f"page contract: {SETTINGS.page_contract_path}",
               f"PAGE_CONTRACT_PATH unreadable: {SETTINGS.page_contract_path}", fatal=False)
@@ -210,20 +224,52 @@ def cmd_run(args: argparse.Namespace) -> int:
     print(f"linked PRs: {prs or 'none found'}")
     print(f"target: {state['target_url'] or '(none - set DASHBOARD_TARGET_URL or --target-url)'}\n")
 
-    def on_phase(name: str, status: str, detail: str) -> None:
-        if status == "running":
-            print(f"  -> {name} ...", flush=True)
-        else:
-            _out("ok" if status == "ok" else "fail", f"{name}: {detail}")
+    final = stages.execute(state, args.stage, on_phase=_on_phase)
+    return _finish_run(final, args)
 
-    final = stages.execute(state, args.stage, on_phase=on_phase)
 
-    if args.json:
+def _on_phase(name: str, status: str, detail: str) -> None:
+    if status == "running":
+        print(f"  -> {name} ...", flush=True)
+    else:
+        _out("ok" if status in ("ok", "waiting") else "fail", f"{name}: {detail}")
+
+
+def _finish_run(final: Dict[str, Any], args: argparse.Namespace) -> int:
+    if getattr(args, "json", False):
         print(json.dumps({k: v for k, v in final.items() if not k.startswith("_")}, indent=2, default=str))
     else:
         _print_outputs(final, args.show)
-    print(f"\nrun state: {final.get('_run_state')}  (also on the dashboard: python -m taf serve)")
-    return 0 if final.get("_run_state") == "completed" else 1
+    run_state = final.get("_run_state")
+    print(f"\nrun state: {run_state}  (also on the dashboard: python -m taf serve)")
+    if run_state == "waiting":
+        request = final.get("_approval_request") or {}
+        action = f"pushing {request.get('branch', '')}" if request.get("will_push") else "publishing"
+        pr = " and opening a pull request" if request.get("will_open_pr") else ""
+        print(f"\nWaiting for approval before {action}{pr}.")
+        for finding in request.get("review_findings") or []:
+            print(f"  review: {finding}")
+        print(f"  approve:  python -m taf resume {final['run_id']} --approve --by <your name>")
+        print(f"  reject:   python -m taf resume {final['run_id']} --reject --note <why>")
+        return 0
+    if run_state in ("cancelled", "failed") and final.get("run_id"):
+        print(f"continue from the last completed step: python -m taf resume {final['run_id']}")
+    return 0 if run_state == "completed" else 1
+
+
+def cmd_resume(args: argparse.Namespace) -> int:
+    from taf.runs import stages
+
+    decision = None
+    if args.approve or args.reject:
+        who = args.by or os.getenv("USERNAME") or os.getenv("USER") or "cli"
+        decision = {"approved": bool(args.approve), "by": who, "note": args.note or ""}
+    try:
+        final = stages.resume(args.run_id, decision, on_phase=_on_phase)
+    except stages.StageError as exc:
+        _out("fail", str(exc))
+        return 2
+    return _finish_run(final, args)
 
 
 def _print_outputs(state: Dict[str, Any], show: List[str]) -> None:
@@ -255,14 +301,8 @@ def cmd_eval(args: argparse.Namespace) -> int:
     if str(PROJECT_ROOT) not in sys.path:  # evals/ sits next to taf/, not inside it
         sys.path.insert(0, str(PROJECT_ROOT))
     from evals.runner import main as eval_main
-    argv: List[str] = []
-    if args.provider:
-        argv += ["--provider", args.provider]
-    for case in args.case or []:
-        argv += ["--case", case]
-    if args.stage:
-        argv += ["--stage", args.stage]
-    return eval_main(argv)
+    # Everything after `eval` goes to the eval runner (see `python -m taf eval --help`).
+    return eval_main(args.eval_args)
 
 
 # ------------------------------------------------------------------- serve --
@@ -377,10 +417,21 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--json", action="store_true", help="print the final pipeline state as JSON")
     p.set_defaults(fn=cmd_run)
 
-    p = sub.add_parser("eval", help="score agent output against evals/cases")
-    p.add_argument("--provider", choices=LLM_PROVIDERS)
-    p.add_argument("--case", action="append", help="case id (repeatable); default: all")
-    p.add_argument("--stage", choices=["triage", "architect", "automation"], help="stop after this agent")
+    p = sub.add_parser("resume", help="continue a run: approve/reject one waiting for approval, or pick up a crashed one")
+    p.add_argument("run_id")
+    decision = p.add_mutually_exclusive_group()
+    decision.add_argument("--approve", action="store_true", help="approve publishing (push / pull request)")
+    decision.add_argument("--reject", action="store_true", help="reject: nothing is published")
+    p.add_argument("--by", help="who decided (recorded in the run, report and PR)")
+    p.add_argument("--note", help="reason, recorded with the decision")
+    p.add_argument("--show", nargs="+", default=["report"],
+                   choices=["triage", "plan", "spec", "logs", "report", "all"], help="what to print afterwards")
+    p.add_argument("--json", action="store_true", help="print the final pipeline state as JSON")
+    p.set_defaults(fn=cmd_resume)
+
+    p = sub.add_parser("eval", add_help=False,
+                       help="score agent output against evals/cases (`eval --help`; `eval compare A B`)")
+    p.add_argument("eval_args", nargs=argparse.REMAINDER)
     p.set_defaults(fn=cmd_eval)
 
     p = sub.add_parser("xray", help="Xray test cases kept in the test repo")
@@ -407,6 +458,13 @@ def main(argv: Optional[List[str]] = None) -> int:
             stream.reconfigure(errors="replace")  # type: ignore[attr-defined]
         except (AttributeError, ValueError):
             pass
+    raw = list(sys.argv[1:] if argv is None else argv)
+    if raw[:1] == ["eval"]:  # the eval runner has its own options; pass them through untouched
+        import logging
+
+        import taf.config  # noqa: F401  (configures logging first)
+        logging.getLogger().setLevel(logging.WARNING)
+        return cmd_eval(argparse.Namespace(eval_args=raw[1:]))
     args = build_parser().parse_args(argv)
     if args.command != "serve" and not args.verbose:
         # Agent events are logged at INFO for the service log; on a terminal the

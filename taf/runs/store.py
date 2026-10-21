@@ -9,8 +9,12 @@ execute pipeline stages.
 
 Phase vocabulary (what the board renders):
     triage -> architect -> automation -> report -> closeout
-Phase states: running | ok | failed | cancelled
-Run states:   running | completed | failed | cancelled
+    (plus approval -> publish between automation and report)
+Phase states: running | waiting | ok | failed | cancelled
+Run states:   running | waiting | completed | failed | cancelled
+`waiting` = paused at the approval gate; the LangGraph checkpoint (a separate file,
+QA_CHECKPOINT_DB_PATH) holds the run until it is resumed. These are values in the
+existing TEXT columns - the schema is unchanged.
 """
 from __future__ import annotations
 
@@ -19,11 +23,11 @@ import sqlite3
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from taf.config import SETTINGS, project_path
 
-PHASES = ("triage", "architect", "automation", "report", "closeout")
+PHASES = ("triage", "architect", "automation", "approval", "publish", "report", "closeout")
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS runs (
@@ -142,8 +146,40 @@ class RunStore:
             )
             self._db.commit()
 
+    def set_run_state(self, run_id: str, state: str) -> None:
+        """running / waiting, without finishing the run (a pause, or a resume)."""
+        with self._lock:
+            self._db.execute("UPDATE runs SET state=?, error=NULL, finished_at=NULL WHERE run_id=?", (state, run_id))
+            self._db.commit()
+
+    def phase_update(self, phase_row_id: int, state: str, detail: str = "",
+                     artifact: Optional[Dict[str, Any]] = None) -> None:
+        """Change a phase's state and detail but leave it open (a run paused at approval)."""
+        blob = json.dumps(artifact, default=str)[:MAX_ARTIFACT_CHARS] if artifact is not None else None
+        with self._lock:
+            self._db.execute("UPDATE phases SET state=?, detail=?, artifact=? WHERE id=?",
+                             (state, detail or None, blob, phase_row_id))
+            self._db.commit()
+
+    def open_phase(self, run_id: str) -> Optional[Tuple[int, str]]:
+        """(row id, phase) of the run's phase that is still waiting, if any."""
+        with self._lock:
+            row = self._db.execute(
+                "SELECT id, phase FROM phases WHERE run_id=? AND state='waiting' ORDER BY id DESC LIMIT 1",
+                (run_id,),
+            ).fetchone()
+            return (int(row["id"]), row["phase"]) if row else None
+
+    def run(self, run_id: str) -> Optional[Dict[str, Any]]:
+        with self._lock:
+            row = self._db.execute("SELECT * FROM runs WHERE run_id=?", (run_id,)).fetchone()
+            return dict(row) if row else None
+
     def mark_stale_running_as_interrupted(self) -> int:
-        """Any run still 'running' at startup died with the previous process."""
+        """
+        Any run still 'running' at startup died with the previous process. Runs that are
+        'waiting' for approval are kept: their checkpoint survives restarts.
+        """
         with self._lock:
             cur = self._db.execute(
                 "UPDATE runs SET state='failed', error='interrupted by service restart',"
@@ -186,7 +222,7 @@ class RunStore:
     def active_run_for(self, ticket_id: str) -> Optional[str]:
         with self._lock:
             row = self._db.execute(
-                "SELECT run_id FROM runs WHERE ticket_id=? AND state='running' LIMIT 1",
+                "SELECT run_id FROM runs WHERE ticket_id=? AND state IN ('running', 'waiting') LIMIT 1",
                 (ticket_id,),
             ).fetchone()
             return row["run_id"] if row else None

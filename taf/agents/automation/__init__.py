@@ -8,7 +8,9 @@ import importlib
 from typing import Any
 
 
-__all__ = ['SYSTEM_PROMPT', 'REPAIR_PROMPT', 'automatable_cases', 'automation_engineer', 'build_messages', 'page_contract_block', 'parse_spec', 'validate_spec']
+__all__ = ['SYSTEM_PROMPT', 'REPAIR_PROMPT', 'OFFLINE_LOG', 'automatable_cases', 'generate_spec', 'build_messages',
+           'max_generations', 'page_contract_block', 'parse_spec', 'repair_messages', 'repo_conventions_block',
+           'validate_spec']
 
 
 def __getattr__(name: str) -> Any:

@@ -1,0 +1,20 @@
+{
+  "id": "ambiguous-export",
+  "description": "A vague ticket with no acceptance criteria. Good output flags the gaps as questions instead of inventing behaviour.",
+  "ticket": {
+    "key": "AMB-1",
+    "summary": "Improve the itinerary PDF export",
+    "target_url": "https://app.example.test",
+    "description": "Customers say the itinerary PDF export is not great. Make it better and faster. It should also look more professional and maybe include the new branding."
+  },
+  "expect": {
+    "triage": {
+      "min_criteria": 1,
+      "ambiguous": true,
+      "min_questions": 1,
+      "should_ask_about": ["faster", "branding"]
+    },
+    "architect": {"min_cases": 1, "max_cases": 12, "min_automatable": 0, "require_traceability": false},
+    "automation": {"min_tests": 0, "forbid": ["waitForTimeout"], "prefer": ["test.skip", "test.fixme"]}
+  }
+}

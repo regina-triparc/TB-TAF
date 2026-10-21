@@ -1,9 +1,10 @@
-Playwright could not load the spec you wrote. This is the output of
-`playwright test {spec} --list`, which only loads and collects the tests (no browser was started):
+The spec you wrote for `{spec}` was rejected by the deterministic checks below
+(`playwright test --list`, the TypeScript compiler, the repository's linter, the
+import and safety checks, or the rule-based review):
 
 ```
 {error}
 ```
 
-Fix the problem and return the COMPLETE corrected file in a single ```typescript block.
-Change only what is needed to make the spec load; keep the test ids, titles and intent.
+Fix every problem listed and return the COMPLETE corrected file in a single ```typescript block.
+Change only what is needed; keep the test ids, titles and intent.

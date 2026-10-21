@@ -45,6 +45,12 @@ class ProviderRequest(BaseModel):
     provider: str
 
 
+class DecisionRequest(BaseModel):
+    approved: bool
+    by: str = Field("dashboard", max_length=100)
+    note: str = Field("", max_length=500)
+
+
 # --------------------------------------------------------------------- API --
 @router.get("/api/board")
 def board() -> JSONResponse:
@@ -119,6 +125,26 @@ def cancel(run_id: str) -> Dict[str, Any]:
         raise HTTPException(status_code=404, detail="No active run with that id")
     return {"run_id": run_id, "cancelling": True,
             "note": "stops before the next stage; an in-flight model call finishes first"}
+
+
+@router.post("/api/decide/{run_id}")
+def decide(run_id: str, req: DecisionRequest) -> Dict[str, Any]:
+    """Approve or reject a run waiting at the approval gate; it continues in the background."""
+    try:
+        stages.resume_in_background(run_id, {"approved": req.approved, "by": req.by, "note": req.note})
+    except stages.StageError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+    return {"run_id": run_id, "approved": req.approved, "state": "running"}
+
+
+@router.post("/api/resume/{run_id}")
+def resume(run_id: str) -> Dict[str, Any]:
+    """Continue a crashed or cancelled run from its last completed step."""
+    try:
+        stages.resume_in_background(run_id, None)
+    except stages.StageError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+    return {"run_id": run_id, "state": "running"}
 
 
 @router.get("/api/provider")

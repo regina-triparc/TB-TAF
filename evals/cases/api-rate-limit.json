@@ -1,0 +1,21 @@
+{
+  "id": "api-rate-limit",
+  "description": "An API-only change. Good specs use Playwright's request fixture, not the browser, and check status codes and headers.",
+  "ticket": {
+    "key": "API-7",
+    "summary": "Rate limit the public search API",
+    "target_url": "https://api.example.test",
+    "description": "The public search endpoint is being scraped.\n\nACCEPTANCE CRITERIA\n1. GET /api/v1/search accepts at most 60 requests per minute per API key.\n2. Request 61 within the same minute returns 429 with a Retry-After header in seconds.\n3. Responses include X-RateLimit-Remaining with the requests left in the window.\n4. Requests without an API key return 401 and do not count towards any limit.\n\nOut of scope: the admin dashboard and billing."
+  },
+  "expect": {
+    "triage": {"min_criteria": 4, "risk_level_in": ["medium", "high", "critical"], "must_mention": ["429", "Retry-After"]},
+    "architect": {"min_cases": 3, "max_cases": 15, "min_automatable": 3, "must_cover": ["429", "401"]},
+    "automation": {
+      "min_tests": 3,
+      "require": ["@playwright/test"],
+      "forbid": ["waitForTimeout"],
+      "prefer": ["request", "status()", "Retry-After"],
+      "out_of_scope": ["billing", "admin dashboard"]
+    }
+  }
+}

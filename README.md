@@ -128,13 +128,21 @@ One run of **Full run** (dashboard) or `python -m taf run TB-601 --stage full`:
 | 0 | **PR diff.** The linked PRs are fetched with git into a small bare clone, then condensed per agent: every file listed, frontend templates shown first. | `taf/integrations/github/pull_requests.py` | GitHub via git: `TravelEdge/TripArc.TripBuilder` (read) |
 | 1 | **Triage:** acceptance criteria, impacted areas, risks, open questions. | `taf/agents/triage/` | the model (via the LLM router) |
 | 2 | **Test Architect:** risk-based test plan, as Xray test cases (JSON + CSV). | `taf/agents/architect/` | the model |
-| 3 | **Automation Engineer:** writes `xray/<TICKET>/` and `e2e/qa/<TICKET>.spec.ts` into the test repo. It checks the spec loads (`playwright test --list`) and repairs it if not, commits both on `qa/<TICKET>` (or leaves them uncommitted locally), and runs the spec. | `taf/agents/automation/`, `taf/integrations/github/repository.py` | the model; GitHub via git: `tripbuilder-e2e` (push, managed mode only); the UAT portal (Playwright) |
-| 4 | **Report Synthesizer:** a Markdown report from the logs. The verdict header is built in Python, so the model cannot change it. | `taf/agents/reporter/` | Ollama, or the built-in fallback |
+| 3 | **Repository context:** the test repo's own conventions - Playwright projects, page objects, fixtures, helpers, an example spec - read from its base branch. | `taf/steps/context.py` | GitHub via git: `tripbuilder-e2e` (fetch) |
+| 4 | **Automation Engineer:** writes the Playwright spec (text only). | `taf/agents/automation/` | the model |
+| 5 | **Static validation (mandatory gate):** no Node APIs, imports exist, `playwright test --list`, `tsc --noEmit`, the repo's ESLint. A fixable failure goes back to step 4, at most `SPEC_REPAIR_ATTEMPTS` times. | `taf/steps/validation.py` | none (local) |
+| 6 | **Playwright run** against the target, then a **review** (rules, plus an optional LLM review). | `taf/steps/validation.py`, `taf/steps/review.py` | the UAT portal (Playwright) |
+| 7 | **Approval:** the run pauses until a person approves (dashboard or `taf resume`). | `taf/steps/publish.py` | none |
+| 8 | **Publish:** commit spec + `xray/<TICKET>/` on `qa/<TICKET>`, push, open a PR (each optional, never repeated on resume). | `taf/steps/publish.py`, `taf/integrations/github/pr_api.py` | GitHub: `tripbuilder-e2e` (push, pull request) |
+| 9 | **Report Synthesizer:** a Markdown report from the logs. The verdict header is built in Python, so the model cannot change it. | `taf/agents/reporter/` | Ollama, or the built-in fallback |
 | - | **Recorded:** every phase and its output, for the dashboard. | `taf/runs/store.py` | none (local SQLite) |
 | later | **Export:** after the PR is merged, `taf xray export` imports the reviewed test cases. | `taf/integrations/jira/xray_cloud.py` | Xray Cloud API |
 
-The agents run in that order inside the service (LangGraph,
-`taf/agents/graph.py`). If one fails, the run skips straight to the report. Every
+The steps run as one checkpointed LangGraph workflow (`taf/agents/graph.py`): a
+run that crashes or waits for approval resumes where it stopped, and nothing is
+pushed before validation passes and a person approves. If an agent fails, the run
+skips straight to the report. Every LLM call can be traced in Langfuse - see
+[docs/WORKFLOW-OBSERVABILITY-EVALS.md](docs/WORKFLOW-OBSERVABILITY-EVALS.md). Every
 agent gets its model from the **LLM router** (`taf/llm/router.py`): Claude,
 Ollama or offline, chosen per run and per agent. Each agent is a folder with its
 code, its prompt as Markdown, and a README; see [taf/agents/README.md](taf/agents/README.md).
@@ -213,6 +221,22 @@ how to discard them. Options: `-Ticket`, `-Stage`, `-Provider`, `-TestRepo`,
 The generated test signs in with `TBA_E2E_EMAIL` / `TBA_E2E_PASSWORD` from the
 test repo's own `.env`.
 
+### `compare-models` - the same ticket on two models, side by side
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\compare-models.ps1                      # tb-601: ollama vs claude
+powershell -ExecutionPolicy Bypass -File scripts\compare-models.ps1 -WithRepo -Judge     # + test-repo checks, LLM judge
+powershell -ExecutionPolicy Bypass -File scripts\compare-models.ps1 -Providers offline,ollama -Case sample-password-reset
+```
+
+(macOS / Linux: `scripts/compare-models.sh`, options `--providers`, `--case`, `--with-repo`,
+`--judge`, `--langfuse`.) Runs the eval suite once per provider, then opens an HTML
+report: checks passed per dimension, time and tokens per stage, every check with its
+reason, and the criteria, test plan and spec each model wrote. Nothing is committed or
+pushed. Needs `.venv` (run `run-seeded` once) and, for Claude, `ANTHROPIC_API_KEY`;
+a TB-601 Claude run costs about $0.70-0.90. Any two result files can also be compared
+by hand: `python -m taf eval report A.json B.json`.
+
 ## Two workflows: real (Jira) and demo (seed)
 
 | | Real flow | Demo flow |
@@ -262,9 +286,10 @@ The model never connects to GitHub itself. For each run the service:
 **Local model and real diffs.** A 3B model with a 4,096-token context sees about
 6,000 characters of diff: the overview plus the three most relevant templates.
 That is enough to pick up real labels and button names, not to reason about the
-whole change. In practice it plans 2 test cases for TB-601's ~13 criteria. For a
-real ticket, use Claude for triage and automation, or at least
-`CLOUD_AGENTS=automation`.
+whole change. Its plan size is capped by `OLLAMA_MAX_TEST_CASES` (5 by default;
+the demo uses 2 to keep a laptop run short), so coverage of TB-601's ~13 criteria
+is limited by design. For a real ticket, use Claude for triage and automation, or
+at least `CLOUD_AGENTS=automation`.
 
 ## Xray test cases: generated, reviewed, then exported
 
@@ -318,9 +343,12 @@ Run from the project root with the virtualenv active.
 | `python -m taf run TB-601 --show all` | Also prints execution logs. `--json` prints the whole final state instead. |
 | `python -m taf run TB-622 --source jira` | The real flow: ticket, linked PRs and their diff from Jira and git. `--source seed` forces the demo. |
 | `python -m taf run ABC-1 --summary "..." --description "..."` | A ticket that is in neither Jira nor the seed file. |
+| `python -m taf resume <run_id> --approve [--by NAME]` | Approves a run waiting at the approval gate: it publishes, then reports. `--reject --note "..."` publishes nothing. |
+| `python -m taf resume <run_id>` | Continues a crashed or cancelled run from its last completed step. |
 | `python -m taf xray export TB-601 [--apply]` | Exports the ticket's reviewed Xray test cases from the test repo (dry run without `--apply`). |
 | `python -m taf skills` | Lists skills and the agents they apply to. |
-| `python -m taf eval --provider ollama` | Scores agent output against `evals/cases`. |
+| `python -m taf eval --provider ollama [--with-repo] [--judge] [--langfuse]` | Scores agent output against `evals/cases`. |
+| `python -m taf eval compare A.json B.json` | What changed between two eval runs (models, prompts, per case and dimension). |
 | `python -m taf serve [--reload] [--port N]` | Starts the API and the dashboard. |
 | `scripts/start-dashboard.*`, `scripts/run-seeded.*` | One-command setup and run - see [One-command scripts](#one-command-scripts). |
 | `python -m unittest` | Offline smoke tests. |
@@ -418,11 +446,20 @@ because a small context window fills fast. Format and settings:
 ## Evals
 
 `evals/` measures whether a change - model, prompt, skill, provider - made the
-agents better or worse. Each case is a ticket plus expectations; the runner sends
-it through the agents and grades triage, plan and spec deterministically, without
-touching a test repo. `python -m taf eval --provider offline` is the free plumbing
-check; run it with `claude` or `ollama` after changing a prompt or skill. Details:
-[evals/README.md](evals/README.md).
+agents better or worse, per dimension (requirements, traceability, scenarios,
+duplicates, ambiguity, selectors, conventions, safety/scope, TypeScript,
+execution). Grading is deterministic; an optional, versioned LLM judge covers only
+what rules cannot. Results record the models, prompt hashes, dataset version and
+git commit, and `python -m taf eval compare` diffs two runs. Evals never create
+runs, branches or PRs. Details: [evals/README.md](evals/README.md).
+
+## Observability (Langfuse)
+
+Optional. With `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` set, every run is a
+Langfuse trace (id derived from the run id), with a span per workflow step and a
+generation per model call (model, tokens, latency), masked for secrets and
+truncated. Without the keys - or when Langfuse is down - runs are unaffected. See
+[docs/WORKFLOW-OBSERVABILITY-EVALS.md](docs/WORKFLOW-OBSERVABILITY-EVALS.md).
 
 ---
 
@@ -450,16 +487,32 @@ models think adaptively, and thinking depth is controlled with `effort`.
 ### LangGraph pipeline
 
 ```
-START → intake_triager → test_architect → automation_engineer → report_synthesizer → closeout → END
-              │                 │                                       ▲
-              └── aborted ──────┴───────────────────────────────────────┘
+gather_context → intake_triager → test_architect → repo_context → ui_snapshot → generate_spec ◀──┐
+                                                                       │                  │ fixable failure /
+                                                                 validate_spec ───────────┤ review blocker,
+                                                                       │ ok               │ attempts left
+                                       run_tests → repair_from_run → review_spec ─────────┘
+                                                                       │
+                                                  approval_gate (pauses) → publish → report_synthesizer → closeout
 ```
 
-If an agent aborts (budget cap hit or an unrecoverable model error), the graph
-jumps straight to the report, so every run ends with a verdict and the reason.
-The dashboard and CLI run the same agents stage by stage
-(`taf/runs/stages.py`) and stop after the report. `closeout` runs only for
-`POST /qa/runs`.
+- **Agents** (LLM): triage, architect, automation (`generate_spec`), and the
+  optional LLM review. **Everything else is deterministic Python** in
+  `taf/steps/`: git, validation, Playwright, publishing. No agent runs commands
+  or writes files.
+- **Failure states.** An aborted agent (budget, unrecoverable model error), a
+  validation failure that cannot be fixed (no test repo, dependencies missing) or
+  that is still failing after `SPEC_REPAIR_ATTEMPTS`, or a rejection goes straight
+  to the report. A failing Playwright test is a finding, not a gate: the PR is
+  opened as a draft and says so.
+- **Checkpoints.** After every step the state is saved to
+  `QA_CHECKPOINT_DB_PATH` (thread = run id). `taf resume` continues a paused,
+  crashed or cancelled run; completed steps are not re-run, and `publish` checks
+  git and GitHub before acting, so a re-entered publish makes no second commit,
+  push or PR.
+- **Stages.** The dashboard and CLI run the same graph; `--stage triage|architect|automation`
+  stop early (`stop_after`), `full` adds approval, publish and the report.
+  `closeout` runs only for `POST /qa/runs`.
 
 **Shared state** (`QAState` in `taf/agents/state.py`):
 - ticket and inputs: `ticket_id`, `summary`, `description`, `github_diff`,
@@ -467,39 +520,41 @@ The dashboard and CLI run the same agents stage by stage
 - agent outputs: `triage_analysis`, `test_plan`, `test_cases`, `xray_tests_json`,
   `xray_csv_content`, `generated_typescript_code`, `execution_logs`,
   `execution_passed`, `final_report`;
+- workflow: `repo_context`, `spec_attempts`, `spec_feedback`, `validation`,
+  `review`, `approval`, `publish`, `trace_url`, `stop_after`;
 - operational fields: `run_id`, `llm_provider`, `ticket_source`, `git_branch`,
   `xray_files`, `errors` and `aborted`.
 
-### The automation step in detail
+### The automation steps in detail
 
-1. The service takes a lock on the test repo (one run at a time), then prepares it:
-   - **Managed clone** (`TEST_REPO_NO_GIT=false`): `git fetch` → `git checkout <base>`
-     → `git pull --ff-only` → `git checkout -B qa/<TICKET>`. `-B` makes re-runs of
-     a ticket reset its branch.
-   - **In place** (`TEST_REPO_NO_GIT=true`, the scripts): no git commands at all.
-2. It writes `xray/<TICKET>/` (JSON, CSV, readable plan).
-3. It installs dependencies once if `node_modules` is missing (`npm ci`), then
-   writes `e2e/qa/<TICKET>.spec.ts`. Every test title is prefixed with `[TC-XXX]`,
-   so results trace back to Xray.
-4. It runs `playwright test <spec> --list`. This loads and transpiles the spec
-   without starting a browser, in seconds. If the spec doesn't load (syntax error,
-   bad import, no tests), the loader output goes back to the model, up to
-   `SPEC_REPAIR_ATTEMPTS` times. The loop only fixes specs that **won't load**; it
-   never "fixes" tests that fail, because a failing test is a QA result.
-5. It commits the spec and the Xray files in one commit and pushes `qa/<TICKET>`
-   (managed clone; a rejected push is retried with `--force-with-lease`). In place,
-   they stay uncommitted.
-6. It runs `playwright test <spec> --project=qa-agent` with `BASE_URL=<target>`,
-   `CI=1` and the test login from `TEST_REPO_ENV_FILE`, capturing the output.
+The shared clone is used under a lock, one step at a time, and left clean after
+every step - the files of a run exist on disk only while a step needs them:
 
-Error handling:
-- **Remote failures don't stop the run.** If fetch, pull or push fails, the
-  problem is logged and the tests still run.
-- **Local failures skip the tests.** If checkout, write or commit fails, the run is
-  marked failed and the reason goes into the report.
-- **Nothing hangs.** Every subprocess has a timeout.
-- **The offline provider writes nothing** to the test repo: its placeholders must
-  never replace real tests.
+1. **repo_context** - managed clone: `git fetch`, `checkout <base>`, `pull --ff-only`;
+   `npm ci` once if `node_modules` is missing; read the conventions. In place
+   (`TEST_REPO_NO_GIT=true`): no git commands at all.
+2. **generate_spec** - the model writes `e2e/qa/<TICKET>.spec.ts`; every test title
+   starts with `[TC-XXX]`, so results trace back to Xray.
+3. **validate_spec** - static checks first (no `child_process`/`fs`/`eval`, every
+   import exists); only a safe spec is written onto the base branch and loaded with
+   `playwright test --list`, then `tsc --noEmit` and ESLint where the repo has them
+   (diagnostics in other files are not counted). Then the files are removed again.
+4. **run_tests** - `playwright test <spec> --project=qa-agent` with `BASE_URL`,
+   `CI=1` and the test login from `TEST_REPO_ENV_FILE`.
+5. **review_spec** - rules (fixed sleeps, `.only`, hard-coded secrets, missing
+   `[TC-xxx]` tests, uncovered criteria, raw CSS locators, unused page objects) and,
+   with `REVIEW_WITH_LLM=true`, a model review. Blockers trigger a repair while
+   attempts remain.
+6. **approval_gate** - pauses when something would leave the machine (push or PR)
+   and `REQUIRE_APPROVAL=true`.
+7. **publish** - `qa/<TICKET>` continues from `origin/qa/<TICKET>` when it exists
+   (a re-run adds a commit to the open PR; nothing is rewritten), else from the
+   base branch. Commit only the spec and `xray/<TICKET>/`; push without force;
+   open the PR when `PR_CREATE_ENABLED=true`.
+
+Guards: the test repo must not be, contain, sit inside, or share a remote with this
+project; every subprocess has a timeout and runs without a shell; the offline
+provider never writes to the test repo.
 
 ### Spec repair and prompt caching
 

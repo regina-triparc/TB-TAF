@@ -1,0 +1,63 @@
+{
+  "description": "Live states of the TripBuilder TSP itinerary captured before a spec is written (taf/steps/ui_snapshot.py). Read-only: dialogs are opened and closed, never submitted.",
+  "storageState": "e2e/.auth/state.json",
+  "open": [
+    { "goto": "/" },
+    { "click": "role=row[name=/Best Of Bangkok/] >> nth=0", "timeout": 90000 },
+    { "waitFor": "role=button[name=\"add Add Service\"] >> nth=0", "timeout": 180000 }
+  ],
+  "states": [
+    {
+      "name": "Trip header: price and commission",
+      "capture": "role=group[name=\"Trip status\"]"
+    },
+    {
+      "name": "Itinerary tab: day cards, service rows, toolbar",
+      "capture": "main",
+      "maxLines": 140
+    },
+    {
+      "name": "Day 3 card -> Add Service: the picker",
+      "actions": [{ "click": ".itin__day-card:has(.itin__day-title:has-text(\"Day 3 ·\")) >> role=button[name=\"add Add Service\"]" }],
+      "capture": "role=dialog >> nth=-1",
+      "keepOpen": true
+    },
+    {
+      "name": "Picker -> Info tile: the Add Info form opened from Day 3",
+      "actions": [{ "click": "role=button[name=/^(\\S+\\s+)?Info$/]" }],
+      "capture": "role=dialog[name=\"Add Info\"]",
+      "keepOpen": true
+    },
+    {
+      "name": "Add Info form: the Start time dropdown opened",
+      "actions": [{ "click": "role=dialog[name=\"Add Info\"] >> role=combobox[name=\"Start\"]" }],
+      "capture": "role=listbox[name=\"Start\"]",
+      "summarizeOptions": true,
+      "close": [{ "press": "Escape" }, { "click": "role=dialog[name=\"Add Info\"] >> role=button[name=\"Cancel\"]" }]
+    },
+    {
+      "name": "Info row -> detail sheet",
+      "actions": [{ "click": ".itin__svc-row:has-text(\"The Above Riva Thai\") .itin__svc-name" }],
+      "capture": "role=dialog[name=\"The Above Riva Thai\"]",
+      "close": [{ "click": "[data-test=\"sds-close\"]" }]
+    },
+    {
+      "name": "Hotel row -> detail sheet",
+      "actions": [{ "click": ".itin__svc-row:has-text(\"Waldorf Astoria\") .itin__svc-name" }],
+      "capture": "role=dialog >> nth=-1",
+      "close": [{ "click": "[data-test=\"sds-close\"]" }]
+    },
+    {
+      "name": "Info row -> Modify: the Edit Info form",
+      "actions": [{ "click": ".itin__svc-row:has-text(\"The Above Riva Thai\") >> role=button[name=/^Modify/]" }],
+      "capture": "role=dialog[name=\"Edit Info\"]",
+      "close": [{ "click": "role=dialog[name=\"Edit Info\"] >> role=button[name=\"Cancel\"]" }]
+    },
+    {
+      "name": "Toolbar Add Service (first button, outside the day cards): day picker",
+      "actions": [{ "click": "role=button[name=\"add Add Service\"] >> nth=0" }],
+      "capture": "role=dialog[name=\"Pick a day for the new service\"]",
+      "maxLines": 40
+    }
+  ]
+}

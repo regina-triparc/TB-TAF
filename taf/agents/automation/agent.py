@@ -1,6 +1,11 @@
 """
-Agent 3 - TS Automation Engineer: writes a Playwright TypeScript spec, repairs it
-until Playwright can load it, then (in the test repo) commits and runs it.
+Agent 3 - TS Automation Engineer: writes the Playwright TypeScript spec.
+
+It only generates text. Writing files, validating, running Playwright and
+publishing are deterministic workflow steps (taf/steps/), and the graph sends the
+spec back here with the problem when a check fails - at most SPEC_REPAIR_ATTEMPTS
+times. The repair turn re-sends the same cached context, so on Claude it is read
+from the prompt cache.
 
 `build_messages` + `parse_spec` are the model-facing half and are reused by the
 evals, which grade a spec without touching any repository.
@@ -10,7 +15,6 @@ from __future__ import annotations
 import json
 import logging
 import re
-from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
@@ -21,10 +25,7 @@ from taf.agents.state import QAState
 from taf.config import SETTINGS, project_path
 from taf.core.text import extract_code_block, message_text, truncate_middle
 from taf.integrations.github.pull_requests import diff_for_prompt
-from taf.integrations.github.repository import REPO_LOCK, TEST_REPO, CommandError
-from taf.integrations.jira import xray
 from taf.integrations.paperclip.control_room import CONTROL_ROOM
-from taf.llm.budget import BudgetExceededError
 from taf.llm.router import ROUTER, AgentRoute, LLMOutputError
 from taf.skills import skills_prompt
 
@@ -34,10 +35,22 @@ SYSTEM_PROMPT = load_prompt(__file__, "prompt.md")
 
 REPAIR_PROMPT = load_prompt(__file__, "repair-prompt.md")
 
+# The turn taf/steps/run_repair.py sends when tests fail at run time.
+RUN_REPAIR_PROMPT = load_prompt(__file__, "run-repair-prompt.md")
+
+OFFLINE_LOG = ("[info] Offline provider: placeholder spec and test cases generated and NOT "
+               "written to the test repository; Playwright was not run. Switch the provider "
+               "to claude or ollama for a real run.")
+
+
+def max_generations() -> int:
+    """First attempt plus SPEC_REPAIR_ATTEMPTS repairs (0-3)."""
+    return 1 + max(0, min(SETTINGS.spec_repair_attempts, 3))
+
 
 def validate_spec(code: str) -> str:
     """Basic structural validation of the generated spec; auto-fixes a missing import."""
-    if "@playwright/test" not in code:
+    if "@playwright/test" not in code and not re.search(r"^\s*import\s+\{[^}]*\btest\b", code, re.MULTILINE):
         code = "import { test, expect } from '@playwright/test';\n\n" + code
     if not re.search(r"\btest\s*\(", code):
         raise LLMOutputError("Generated spec contains no `test(` blocks.")
@@ -70,7 +83,19 @@ def page_contract_block() -> str:
         return ""
     header = ("\n\n## Page contract - REAL selectors from the live app\n"
               "These are authoritative. Use these roles and names verbatim; do not invent others.\n\n")
-    return header + truncate_middle(text, 8000)
+    return header + truncate_middle(text, 12_000)
+
+
+def repo_conventions_block(state: QAState) -> str:
+    """The test repository's conventions (page objects, fixtures, example spec) from repo_context."""
+    text = (state.get("repo_context") or {}).get("prompt") or ""
+    return f"\n\n{text}" if text else ""
+
+
+def live_snapshot_block(state: QAState) -> str:
+    """The app's live accessibility tree from the ui_snapshot step, when it was captured."""
+    text = (state.get("live_snapshot") or {}).get("prompt") or ""
+    return f"\n\n{text}" if text else ""
 
 
 def automatable_cases(state: QAState) -> List[Dict[str, Any]]:
@@ -82,6 +107,7 @@ def build_messages(state: QAState, route: AgentRoute) -> List[BaseMessage]:
     prompt = f"""TICKET_ID: {state['ticket_id']}
 Summary: {state.get('summary', '')}
 Target URL: {state.get('target_url', '')}
+Spec file: {SETTINGS.test_spec_dir.strip('/')}/{state['ticket_id']}.spec.ts
 
 ## Triage analysis
 ```json
@@ -96,135 +122,53 @@ Target URL: {state.get('target_url', '')}
 ## Diff (for selectors, routes and copy text)
 ```diff
 {diff_for_prompt(state, 1 / 2, route.provider)}
-```{page_contract_block()}"""
+```{repo_conventions_block(state)}{live_snapshot_block(state)}{page_contract_block()}"""
     system = SYSTEM_PROMPT + skills_prompt("automation", route.provider)
     return [SystemMessage(content=system), ROUTER.context_message(route, prompt)]
 
 
-@agent_node("TS Automation Engineer", engine="llm+local-cli", abort_on_error=True, route_key="automation")
-def automation_engineer(state: QAState) -> Dict[str, Any]:
+def repair_messages(state: QAState, route: AgentRoute) -> List[BaseMessage]:
+    """The previous spec and why it was rejected, as one extra turn on the cached context."""
+    previous = state.get("generated_typescript_code") or "(no usable spec was produced)"
+    rel_spec = f"{SETTINGS.test_spec_dir.strip('/')}/{state['ticket_id']}.spec.ts"
+    block: Dict[str, Any] = {"type": "text",
+                             "text": REPAIR_PROMPT.format(spec=rel_spec, error=state.get("spec_feedback", ""))}
+    if route.cache_context:
+        block["cache_control"] = ROUTER.cache_control()
+    return [AIMessage(content=f"```typescript\n{previous}\n```"), HumanMessage(content=[block])]
+
+
+@agent_node("TS Automation Engineer", engine="llm", abort_on_error=True, route_key="automation")
+def generate_spec(state: QAState) -> Dict[str, Any]:
     """
-    Writes into the test repo, on the qa/<TICKET> branch (or in place):
-      * XRAY_DIR/<TICKET>/ - the plan's Xray test cases (JSON, CSV, readable plan)
-      * TEST_SPEC_DIR/<TICKET>.spec.ts - the Playwright spec, repaired until it loads
-    commits both together for review, then runs the spec.
+    Generate (or, when `spec_feedback` is set, repair) the spec. A spec that cannot be
+    parsed is not an error here: validation rejects it and the graph decides whether
+    another attempt is allowed.
     """
     ticket_id, run_id = state["ticket_id"], state["run_id"]
-    target_url = state.get("target_url", "")
     route = ROUTER.route("automation", state.get("llm_provider"))
-    agent = route.label
+    attempt = int(state.get("spec_attempts") or 0) + 1
     cases = automatable_cases(state)
-    xray_files = xray.ticket_files(state)
-    no_cases_error = f"{agent}: no automatable test cases in plan."
+    if not cases:
+        return {"spec_attempts": attempt, "generated_typescript_code": "", "spec_feedback": "",
+                "errors": [f"{route.label}: no automatable test cases in plan."]}
 
-    # ---- 3a. The model writes the Playwright spec ---------------------------
-    answer: Optional[AIMessage] = None
-    messages: List[BaseMessage] = []
-    if cases:
-        messages = build_messages(state, route)
-        answer = ROUTER.text(state, route, messages)
+    messages = build_messages(state, route)
+    repairing = attempt > 1 and bool(state.get("spec_feedback"))
+    if repairing:
+        messages += repair_messages(state, route)
+        CONTROL_ROOM.emit(run_id, ticket_id, "agent.log", agent=route.label,
+                          message=f"Repair attempt {attempt - 1}/{max_generations() - 1}")
+    answer = ROUTER.text(state, route, messages)
+    code, problem = parse_spec(answer)
 
-    if route.provider == "offline":
-        # Placeholders must never overwrite a real spec or real test cases in a test repo.
-        code, problem = parse_spec(answer) if answer is not None else (None, None)
-        return {
-            "generated_typescript_code": code or "",
-            "execution_passed": False,
-            "execution_logs": ("[info] Offline provider: placeholder spec and test cases generated and NOT "
-                               "written to the test repository; Playwright was not run. Switch the provider "
-                               "to claude or ollama for a real run." + (f"\n[error] {problem}" if problem else "")),
-        }
-    if not cases and not xray_files:
-        return {
-            "execution_passed": False,
-            "execution_logs": "[error] The test plan is empty - nothing was written or executed.",
-            "errors": [no_cases_error],
-        }
-
-    # ---- 3b. Write test cases + spec -> repair -> commit -> run (one shared clone) --
-    logs: List[str] = []
-    errors: List[str] = []
-    code: Optional[str] = None
-    spec_path: Optional[Path] = None
-    xray_paths: List[Path] = []
-    branch, pushed, loaded, passed = "", False, False, False
-    max_repairs = max(0, min(SETTINGS.spec_repair_attempts, 3))  # 1 + 3 cache breakpoints max
-    repairs = 0
-
-    CONTROL_ROOM.emit(run_id, ticket_id, "agent.log", agent=agent, message="Waiting for test repository lock")
-    with REPO_LOCK:
-        try:
-            TEST_REPO.ensure_ready(logs)
-            branch = TEST_REPO.prepare_branch(ticket_id, logs)
-            if xray_files:
-                xray_paths = TEST_REPO.write_files(xray.ticket_dir(ticket_id), xray_files, logs)
-
-            deps_ok = False
-            if cases:
-                deps_ok = TEST_REPO.install_dependencies(target_url, logs)
-            else:
-                logs.append("[error] The test plan contains no automatable test cases - "
-                            "test cases written, no spec generated or executed.")
-                errors.append(no_cases_error)
-
-            while answer is not None:
-                candidate, problem = parse_spec(answer)
-                if candidate is not None:
-                    code = candidate
-                    spec_path = TEST_REPO.write_spec(ticket_id, code, logs)
-                    if not deps_ok:
-                        break  # cannot validate or run without node_modules
-                    listing = TEST_REPO.list_tests(spec_path, target_url)
-                    logs.append(listing.as_log())
-                    if listing.ok:
-                        loaded = True
-                        break
-                    problem = truncate_middle(f"{listing.stdout}\n{listing.stderr}".strip(), 6000)
-
-                if repairs >= max_repairs:
-                    break
-                CONTROL_ROOM.emit(run_id, ticket_id, "agent.log", agent=agent,
-                                  message=f"Spec did not load - repair attempt {repairs + 1}/{max_repairs}")
-                rel_spec = f"{SETTINGS.test_spec_dir}/{ticket_id}.spec.ts"
-                repair_block: Dict[str, Any] = {"type": "text",
-                                                "text": REPAIR_PROMPT.format(spec=rel_spec, error=problem)}
-                if route.cache_context:
-                    repair_block["cache_control"] = ROUTER.cache_control()  # next repair reuses this turn too
-                messages += [answer, HumanMessage(content=[repair_block])]
-                try:
-                    answer = ROUTER.text(state, route, messages)
-                except (BudgetExceededError, LLMOutputError) as exc:
-                    errors.append(f"{agent}: repair stopped - {exc}")
-                    break
-                repairs += 1
-
-            to_commit = xray_paths + ([spec_path] if spec_path is not None else [])
-            if to_commit:
-                pushed = TEST_REPO.commit_and_push(ticket_id, to_commit, branch, logs)
-            if loaded:
-                CONTROL_ROOM.emit(run_id, ticket_id, "agent.log", agent=agent,
-                                  message=f"Spec loads (repairs: {repairs}); branch {branch} "
-                                          f"(pushed={pushed}); running Playwright")
-                passed = TEST_REPO.run_playwright(spec_path, target_url, logs)
-            elif deps_ok:
-                message = f"Spec still fails to load after {repairs} repair attempt(s) - tests not executed."
-                logs.append(f"[error] {message}")
-                errors.append(f"{agent}: {message}")
-        except CommandError as exc:
-            if exc.result is not None:
-                logs.append(exc.result.as_log())
-            logs.append(f"[error] {exc}")
-            errors.append(f"{agent}: {exc}")
-            passed = False
-
-    repo_root = TEST_REPO.path
-    return {
+    update: Dict[str, Any] = {
+        "spec_attempts": attempt,
         "generated_typescript_code": code or "",
-        "spec_file_path": str(spec_path) if spec_path else "",
-        "xray_files": [p.resolve().relative_to(repo_root.resolve()).as_posix() for p in xray_paths] if repo_root else [],
-        "git_branch": branch,
-        "git_pushed": pushed,
-        "execution_logs": "\n\n".join(logs),
-        "execution_passed": passed,
-        "errors": errors,
+        # Feedback is consumed: validation sets it again if this attempt fails too.
+        "spec_feedback": problem or "",
     }
+    if route.provider == "offline":
+        update["execution_logs"] = OFFLINE_LOG + (f"\n[error] {problem}" if problem else "")
+        update["execution_passed"] = False
+    return update
