@@ -410,7 +410,8 @@ def phase_artifact(name: str, state: Dict[str, Any]) -> Optional[Dict[str, Any]]
     if name == "publish":
         return {"publish": state.get("publish") or {}}
     if name == "report":
-        return {"report_markdown": (state.get("final_report") or "")[:20000], "trace_url": state.get("trace_url")}
+        return {"report_markdown": (state.get("final_report") or "")[:20000], "trace_url": state.get("trace_url"),
+                "report_html_path": state.get("report_html_path") or ""}
     return None
 
 

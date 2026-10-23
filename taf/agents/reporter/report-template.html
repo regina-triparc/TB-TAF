@@ -1,0 +1,459 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>__TITLE__</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Schibsted+Grotesk:wght@500;700&family=Source+Sans+3:wght@400;600&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+/* A test-run worksheet: sticky tally, run summary, automation results, gaps, then one
+   card per test case with steps, rerun command, JSON and assertions to mark. */
+:root {
+  --bg: #f6f8f7; --surface: #ffffff; --sunk: #eef3f0; --fg: #17211d; --muted: #5a6b64; --line: #dbe3df;
+  --accent: #0f5b45; --accent-fg: #ffffff; --accent-soft: #e3efe9;
+  --pass: #1d7a4a; --pass-bg: #e2f3e9;
+  --fail: #b3261e; --fail-bg: #fbe5e3;
+  --block: #8a5a00; --block-bg: #fcefd2;
+  --unv: #5f6670; --unv-bg: #eceef1;
+  --code-bg: #14201b; --code-fg: #d6e6de;
+  --f-display: "Schibsted Grotesk", "Helvetica Neue", Arial, sans-serif;
+  --f-body: "Source Sans 3", "Segoe UI", system-ui, sans-serif;
+  --f-mono: "JetBrains Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #101614; --surface: #17201d; --sunk: #121a17; --fg: #e3ebe7; --muted: #9aaba4; --line: #2a3632;
+    --accent: #5fc49c; --accent-fg: #0b1512; --accent-soft: #1b2e27;
+    --pass: #6fd39c; --pass-bg: #163325; --fail: #ff8f86; --fail-bg: #3a1a18;
+    --block: #f0c262; --block-bg: #3a2c0e; --unv: #b3bac4; --unv-bg: #252b31;
+    --code-bg: #0b100e; --code-fg: #cfe2d8;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #101614; --surface: #17201d; --sunk: #121a17; --fg: #e3ebe7; --muted: #9aaba4; --line: #2a3632;
+  --accent: #5fc49c; --accent-fg: #0b1512; --accent-soft: #1b2e27;
+  --pass: #6fd39c; --pass-bg: #163325; --fail: #ff8f86; --fail-bg: #3a1a18;
+  --block: #f0c262; --block-bg: #3a2c0e; --unv: #b3bac4; --unv-bg: #252b31;
+  --code-bg: #0b100e; --code-fg: #cfe2d8;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.55 var(--f-body); padding: 0 16px 64px; }
+.wrap { max-width: 960px; margin: 0 auto; display: grid; gap: 28px; }
+h1, h2, h3 { font-family: var(--f-display); margin: 0; line-height: 1.2; text-wrap: balance; }
+h1 { font-size: clamp(1.6rem, 4vw, 2.2rem); }
+h2 { font-size: 1.2rem; }
+h3 { font-size: .98rem; }
+p { margin: 0; }
+a { color: var(--accent); }
+.eyebrow { font: 600 .72rem/1 var(--f-mono); letter-spacing: .08em; text-transform: uppercase; color: var(--accent); }
+.muted { color: var(--muted); }
+code { font-family: var(--f-mono); font-size: .85em; background: var(--accent-soft); padding: 1px 5px; border-radius: 4px; overflow-wrap: anywhere; }
+
+.bar { position: sticky; top: 0; z-index: 5; background: var(--bg); border-bottom: 1px solid var(--line); padding-block: 12px; display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; }
+.bar .count { display: flex; flex-wrap: wrap; gap: 6px; }
+.bar .spacer { flex: 1 1 auto; }
+.progress { flex: 1 1 160px; height: 6px; background: var(--sunk); border-radius: 999px; overflow: hidden; min-width: 120px; }
+.progress span { display: block; height: 100%; background: var(--accent); width: 0; transition: width .2s; }
+@media (prefers-reduced-motion: reduce) { .progress span { transition: none; } }
+
+.pill { display: inline-flex; align-items: center; gap: 6px; font: 600 .72rem/1 var(--f-mono); letter-spacing: .04em; text-transform: uppercase; padding: 5px 9px; border-radius: 999px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.pill::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+.p-pass { color: var(--pass); background: var(--pass-bg); }
+.p-fail { color: var(--fail); background: var(--fail-bg); }
+.p-block { color: var(--block); background: var(--block-bg); }
+.p-unv { color: var(--unv); background: var(--unv-bg); }
+.p-todo { color: var(--muted); background: var(--sunk); }
+
+button { font: 600 .88rem/1 var(--f-body); border-radius: 8px; padding: 9px 14px; cursor: pointer; border: 1px solid var(--line); background: var(--surface); color: var(--fg); }
+button:hover { border-color: var(--accent); }
+button.primary { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
+button:focus-visible, input:focus-visible, textarea:focus-visible, summary:focus-visible, label:focus-within { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+header { display: grid; gap: 10px; padding-top: 28px; }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 20px; display: grid; gap: 16px; min-width: 0; }
+.fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
+.field { display: grid; gap: 4px; }
+.field label { font: 600 .72rem/1 var(--f-mono); letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+input[type="text"], textarea { width: 100%; font: 15px/1.4 var(--f-body); color: var(--fg); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; }
+textarea { resize: vertical; min-height: 38px; }
+ul, ol { margin: 0; padding-left: 1.25em; display: grid; gap: 6px; }
+
+.run-banner { background: var(--accent-soft); border-radius: 10px; padding: 14px 16px; display: grid; gap: 6px; font-size: .94rem; }
+.run-banner strong { color: var(--accent); }
+.kv { display: grid; grid-template-columns: max-content 1fr; gap: 4px 14px; font-size: .92rem; }
+.kv dt { color: var(--muted); font: 600 .74rem/1.9 var(--f-mono); text-transform: uppercase; letter-spacing: .04em; }
+.kv dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+
+.code { position: relative; min-width: 0; }
+.code pre { margin: 0; background: var(--code-bg); color: var(--code-fg); font: 12.5px/1.55 var(--f-mono); padding: 14px 16px; padding-right: 76px; border-radius: 8px; overflow-x: auto; white-space: pre; max-height: 420px; }
+.code button { position: absolute; top: 8px; right: 8px; padding: 6px 10px; font-size: .78rem; background: var(--surface); }
+details > summary { cursor: pointer; font: 600 .82rem/1.4 var(--f-mono); color: var(--muted); }
+details[open] > summary { margin-bottom: 8px; }
+
+table { width: 100%; border-collapse: collapse; font-size: .9rem; }
+th, td { text-align: left; padding: 8px 10px; border-top: 1px solid var(--line); vertical-align: top; }
+th { font: 600 .72rem/1.2 var(--f-mono); text-transform: uppercase; letter-spacing: .05em; color: var(--muted); border-top: 0; }
+td.num, td.tc { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; }
+.err { font: 12px/1.45 var(--f-mono); color: var(--fail); white-space: pre-wrap; overflow-wrap: anywhere; margin-top: 6px; }
+
+.tc-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 12px; }
+.tc-id { font: 600 .8rem/1 var(--f-mono); color: var(--accent); }
+.ac { font: 600 .72rem/1 var(--f-mono); color: var(--muted); letter-spacing: .04em; }
+.tc-head .tc-tally { margin-left: auto; display: flex; gap: 6px; flex-wrap: wrap; }
+.note-box { background: var(--block-bg); color: var(--fg); border-radius: 8px; padding: 10px 12px; font-size: .92rem; }
+.note-box strong { color: var(--block); }
+.auto-box { border-radius: 8px; padding: 10px 12px; font-size: .92rem; background: var(--sunk); }
+.auto-box.passed { background: var(--pass-bg); }
+.auto-box.failed { background: var(--fail-bg); }
+.steps li { font-size: .95rem; }
+
+.asserts { display: grid; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.assert { display: grid; grid-template-columns: 1fr auto; gap: 8px 16px; padding: 12px 14px; border-top: 1px solid var(--line); align-items: start; }
+.assert:first-child { border-top: 0; }
+.assert[data-s="pass"] { box-shadow: inset 4px 0 0 var(--pass); }
+.assert[data-s="fail"] { box-shadow: inset 4px 0 0 var(--fail); }
+.assert[data-s="block"] { box-shadow: inset 4px 0 0 var(--block); }
+.assert[data-s="unv"] { box-shadow: inset 4px 0 0 var(--unv); }
+.a-text { min-width: 0; display: grid; gap: 4px; }
+.a-id { font: 600 .74rem/1 var(--f-mono); color: var(--muted); }
+.a-prev { font-size: .82rem; color: var(--muted); }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.seg label { cursor: pointer; font: 600 .74rem/1 var(--f-mono); letter-spacing: .03em; text-transform: uppercase; padding: 8px 10px; color: var(--muted); border-left: 1px solid var(--line); position: relative; }
+.seg label:first-child { border-left: 0; }
+.seg input { position: absolute; opacity: 0; pointer-events: none; }
+.seg label.on-pass { background: var(--pass-bg); color: var(--pass); }
+.seg label.on-fail { background: var(--fail-bg); color: var(--fail); }
+.seg label.on-block { background: var(--block-bg); color: var(--block); }
+.seg label.on-unv { background: var(--unv-bg); color: var(--unv); }
+.a-note { grid-column: 1 / -1; }
+@media (max-width: 620px) {
+  .assert { grid-template-columns: 1fr; }
+  .seg { justify-self: start; }
+  .kv { grid-template-columns: 1fr; }
+}
+
+.ev { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; }
+.ev a { display: grid; gap: 6px; color: var(--fg); text-decoration: none; font-size: .84rem; min-width: 0; overflow-wrap: anywhere; }
+.ev img { width: 100%; aspect-ratio: 4 / 3; object-fit: cover; object-position: top; border: 1px solid var(--line); border-radius: 6px; background: var(--sunk); }
+.ev a:hover img { border-color: var(--accent); }
+.gaps { display: grid; gap: 14px; }
+.gaps h3 { display: flex; gap: 8px; align-items: center; }
+.gaps li { font-size: .94rem; }
+.toast { position: fixed; left: 50%; transform: translateX(-50%); bottom: 20px; background: var(--fg); color: var(--bg); padding: 10px 16px; border-radius: 8px; font-size: .9rem; z-index: 20; }
+.lightbox { position: fixed; inset: 0; background: rgba(0,0,0,.85); display: grid; place-items: center; z-index: 30; padding: 16px; cursor: zoom-out; }
+.lightbox[hidden], .toast[hidden] { display: none; }
+.lightbox img { max-width: 100%; max-height: 100%; border-radius: 6px; }
+#out { width: 100%; min-height: 160px; font: 12.5px/1.5 var(--f-mono); }
+footer { color: var(--muted); font-size: .86rem; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="bar" role="region" aria-label="Run progress">
+    <div class="progress" aria-hidden="true"><span id="prog"></span></div>
+    <div class="count" id="tally"></div>
+    <div class="spacer"></div>
+    <button type="button" class="primary" id="copyRes">Copy results</button>
+    <button type="button" id="prefill">Reset to automation</button>
+    <button type="button" id="reset">Clear marks</button>
+  </div>
+
+  <header id="head"></header>
+
+  <section class="card" aria-labelledby="autoH">
+    <div class="tc-head"><h2 id="autoH">Automation results</h2><div class="tc-tally" id="autoTally"></div></div>
+    <div id="auto"></div>
+  </section>
+
+  <section class="card" aria-labelledby="gapsH">
+    <h2 id="gapsH">Gaps and open points</h2>
+    <div class="gaps" id="gaps"></div>
+  </section>
+
+  <section class="card" aria-labelledby="setupH">
+    <h2 id="setupH">Before you start</h2>
+    <div class="fields">
+      <div class="field"><label for="f-env">Environment / URL</label><input type="text" id="f-env" autocomplete="off"></div>
+      <div class="field"><label for="f-build">Build / date</label><input type="text" id="f-build" placeholder="e.g. UAT, 22 Oct 2026" autocomplete="off"></div>
+      <div class="field"><label for="f-tester">Tester</label><input type="text" id="f-tester" autocomplete="off"></div>
+    </div>
+    <ul>
+      <li>Work top to bottom. Mark each assertion <strong>Pass</strong>, <strong>Fail</strong>, <strong>Blocked</strong> or <strong>Unverified</strong>, and add a note for anything that isn't a clean pass.</li>
+      <li>Marks start from the automation run: a passed automated test pre-marks its assertions Pass; a failed one leaves them for you, with the error shown. <strong>Reset to automation</strong> restores those marks; <strong>Clear marks</strong> empties them.</li>
+      <li>Your marks and notes are saved in this browser only. When you're done, use <strong>Copy results</strong> and paste the table into Jira.</li>
+      <li>Never paste an error into Jira without reading it first: some error pages include a login token.</li>
+    </ul>
+    <h3>Rerun the automation</h3>
+    <p class="muted">From the test repository. Each test case card has the same command narrowed to that case.</p>
+    <div class="code"><button type="button" data-copy="snip-all">Copy</button><pre id="snip-all"></pre></div>
+  </section>
+
+  <div id="tcs" class="wrap"></div>
+
+  <section class="card" aria-labelledby="rawH">
+    <h2 id="rawH">Raw data</h2>
+    <details><summary>Acceptance criteria (from triage)</summary><ol id="criteria"></ol></details>
+    <details><summary>Xray import payload (JSON)</summary><div class="code"><button type="button" data-copy="snip-xray">Copy</button><pre id="snip-xray"></pre></div></details>
+    <details><summary>Automation results (JSON)</summary><div class="code"><button type="button" data-copy="snip-auto">Copy</button><pre id="snip-auto"></pre></div></details>
+  </section>
+
+  <section class="card" aria-labelledby="resH">
+    <h2 id="resH">Results to paste</h2>
+    <p class="muted">Updates as you mark. Copy it with the button at the top, or select the text here.</p>
+    <textarea id="out" readonly aria-label="Results in Markdown"></textarea>
+  </section>
+
+  <footer id="foot"></footer>
+</div>
+<div class="toast" id="toast" hidden role="status"></div>
+<div class="lightbox" id="lightbox" hidden><img alt=""></div>
+
+<script type="application/json" id="report-data">/*__REPORT_DATA__*/null</script>
+<script>
+const D = JSON.parse(document.getElementById('report-data').textContent) || {};
+const STATES = [['pass', 'Pass'], ['fail', 'Fail'], ['block', 'Blocked'], ['unv', 'Unverified']];
+const KEY = `taf-report-${D.ticket_id}-${D.run_id}`;
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const secs = (ms) => ms ? (ms / 1000).toFixed(1) + ' s' : '—';
+const firstLine = (s) => String(s || '').split('\n').find(l => l.trim()) || '';
+const cases = D.cases || [];
+const aId = (tc, i) => `${tc}.${i + 1}`;
+const allIds = () => cases.flatMap(c => c.steps.map((_, i) => aId(c.test_id, i)));
+const rerun = (grep) => `npx playwright test ${D.spec} --project=${D.project}` + (grep ? ` -g "${grep}"` : '');
+
+// Marks the automation run implies: a passed test passes every step, anything else is left to the tester.
+function automationState() {
+  const st = { marks: {}, notes: {}, fields: { env: D.target_url || '', build: '', tester: '' } };
+  cases.forEach(c => {
+    const a = c.automation;
+    if (a && a.status === 'passed') c.steps.forEach((_, i) => {
+      st.marks[aId(c.test_id, i)] = 'pass'; st.notes[aId(c.test_id, i)] = `Automated: passed (${secs(a.duration_ms)}).`;
+    });
+  });
+  return st;
+}
+
+let state = automationState();
+try { const raw = localStorage.getItem(KEY); if (raw) state = Object.assign({ marks: {}, notes: {}, fields: {} }, JSON.parse(raw)); } catch (e) {}
+const save = () => { try { localStorage.setItem(KEY, JSON.stringify(state)); } catch (e) {} };
+
+const STATUS_PILL = { passed: 'p-pass', failed: 'p-fail', skipped: 'p-block' };
+const pillFor = (status) => `<span class="pill ${STATUS_PILL[status] || 'p-todo'}">${esc(status || 'not run')}</span>`;
+const countPills = (counts) => Object.entries(counts || {}).map(([k, n]) =>
+  `<span class="pill ${STATUS_PILL[k] || 'p-unv'}">${n} ${esc(k)}</span>`).join('');
+const shots = (list) => list && list.length ? `<div class="ev">${list.map(s =>
+  `<a href="${s.src}" data-zoom><img src="${s.src}" alt="${esc(s.name)}" loading="lazy"><span>${esc(s.name)}</span></a>`).join('')}</div>` : '';
+const codeBlock = (id, text) => `<div class="code"><button type="button" data-copy="${id}">Copy</button><pre id="${id}">${esc(text)}</pre></div>`;
+
+function renderHead() {
+  const verdict = !D.ran ? '<span class="pill p-unv">Automation not run</span>'
+    : D.passed ? '<span class="pill p-pass">Automation passed</span>' : '<span class="pill p-fail">Automation failed</span>';
+  const row = (k, v) => v ? `<dt>${k}</dt><dd>${v}</dd>` : '';
+  document.getElementById('head').innerHTML = `
+    <span class="eyebrow">${esc(D.ticket_id)} · QA report${D.risk_level ? ' · risk ' + esc(D.risk_level) : ''}</span>
+    <h1>${esc(D.ticket_id)}: ${esc(D.summary)}</h1>
+    ${D.feature_summary ? `<p class="muted">${esc(D.feature_summary)}</p>` : ''}
+    <div class="run-banner">
+      <p>${verdict} ${countPills(D.counts)}</p>
+      <dl class="kv">
+        ${row('Target', D.target_url ? `<code>${esc(D.target_url)}</code>` : '')}
+        ${row('Run', `<code>${esc(D.run_id)}</code> · ${esc(D.finished)}`)}
+        ${row('Spec', `<code>${esc(D.spec)}</code>`)}
+        ${row('Branch', D.branch ? `<code>${esc(D.branch)}</code>` : '')}
+        ${row('Pull request', D.pr_url ? `<a href="${esc(D.pr_url)}" target="_blank" rel="noopener">${esc(D.pr_url)}</a>` : '')}
+        ${row('Trace', D.trace_url ? `<a href="${esc(D.trace_url)}" target="_blank" rel="noopener">Langfuse trace</a>` : '')}
+      </dl>
+    </div>`;
+  document.getElementById('foot').innerHTML = `Generated by the TAF Report Synthesizer for run <code>${esc(D.run_id)}</code>, ${esc(D.finished)}. Pre-filled marks come from the automation run; the tester's marks replace them.`;
+}
+
+function renderAutomation() {
+  const host = document.getElementById('auto');
+  document.getElementById('autoTally').innerHTML = countPills(D.counts);
+  if (!D.automation || !D.automation.length) {
+    host.innerHTML = '<p class="muted">No automated tests ran in this run (offline run, failed validation, or the run stopped before Playwright). Every case below needs a manual pass.</p>';
+    return;
+  }
+  host.innerHTML = `<div class="table-wrap"><table>
+    <thead><tr><th>Case</th><th>Test</th><th>Status</th><th>Duration</th></tr></thead>
+    <tbody>${D.automation.map(t => `<tr>
+      <td class="tc"><a href="#${esc(t.tc)}">${esc(t.tc || '—')}</a></td>
+      <td>${esc(t.title.replace(/^\[TC-\d+\]\s*/, ''))}${t.error ? `<details><summary>Error</summary><div class="err">${esc(t.error)}</div></details>` : ''}${shots(t.screenshots)}</td>
+      <td>${pillFor(t.status)}</td><td class="num">${secs(t.duration_ms)}</td></tr>`).join('')}
+    </tbody></table></div>`;
+}
+
+function renderGaps() {
+  const g = D.gaps || {};
+  const block = (title, pillCls, items, fmt) => items && items.length
+    ? `<div><h3><span class="pill ${pillCls}">${items.length}</span>${title}</h3><ul>${items.map(fmt).join('')}</ul></div>` : '';
+  const link = (tc) => `<li><a href="#${esc(tc)}">${esc(tc)}</a> ${esc((cases.find(c => c.test_id === tc) || {}).summary || '')}</li>`;
+  const html = [
+    block('Acceptance criteria no test case covers', 'p-fail', g.uncovered_criteria, c => `<li><strong>AC-${c.n}</strong> ${esc(c.text)}</li>`),
+    block('Automatable cases the run did not execute', 'p-fail', g.not_run, link),
+    block('Manual-only cases (not automatable)', 'p-block', g.manual_only, link),
+    block('Static validation checks that failed', 'p-fail', g.validation_failed, n => `<li><code>${esc(n)}</code></li>`),
+    block('Review findings', 'p-block', g.review, f => `<li><strong>${esc(f.severity)}</strong> · ${esc(f.rule)}: ${esc(f.detail)}</li>`),
+    block('Open questions for the team', 'p-unv', g.questions, q => `<li>${esc(q)}</li>`),
+    block('Risks to keep in mind', 'p-unv', g.risks, r => `<li>${esc(r)}</li>`),
+    block('Pipeline errors', 'p-fail', g.errors, e => `<li><code>${esc(e)}</code></li>`),
+  ].filter(Boolean).join('');
+  document.getElementById('gaps').innerHTML = html || '<p class="muted">No gaps recorded: every criterion is covered and every automatable case ran.</p>';
+}
+
+function renderCases() {
+  document.getElementById('tcs').innerHTML = cases.map(c => {
+    const a = c.automation;
+    const auto = a
+      ? `<div class="auto-box ${esc(a.status)}"><strong>Automation:</strong> ${pillFor(a.status)} in ${secs(a.duration_ms)}${a.error ? `<div class="err">${esc(firstLine(a.error))}</div>` : ''}</div>`
+      : `<div class="auto-box"><strong>Automation:</strong> ${c.automatable ? (D.ran ? 'automatable, but no test ran for this case.' : 'automatable; not run in this run.') : 'manual only.'}</div>`;
+    const autoShots = ((D.automation || []).find(t => t.tc === c.test_id) || {}).screenshots;
+    return `
+    <section class="card" id="${esc(c.test_id)}" aria-labelledby="h-${esc(c.test_id)}">
+      <div class="tc-head">
+        <span class="tc-id">${esc(c.test_id)}</span>
+        <span class="ac">${esc((c.ac_refs || []).join(' · '))}</span>
+        <span class="ac">${esc(c.priority)} · ${esc(c.category)}</span>
+        <h2 id="h-${esc(c.test_id)}">${esc(c.summary)}</h2>
+        <div class="tc-tally" data-tally="${esc(c.test_id)}"></div>
+      </div>
+      ${auto}
+      ${c.preconditions ? `<p class="note-box"><strong>Preconditions.</strong> ${esc(c.preconditions)}</p>` : ''}
+      <ol class="steps">${c.steps.map(s => `<li>${esc(s.action)}${s.data ? ` <code>${esc(s.data)}</code>` : ''}</li>`).join('')}</ol>
+      <div class="asserts">
+        ${c.steps.map((s, i) => { const id = aId(c.test_id, i); return `
+          <div class="assert" data-a="${id}">
+            <div class="a-text"><span class="a-id">${id}</span><span>${esc(s.expected_result)}</span>
+              ${a ? `<span class="a-prev">Automation: ${esc(a.status)}${a.status === 'failed' ? ' (failing step not known; check the error)' : ''}</span>` : ''}</div>
+            <div class="seg" role="radiogroup" aria-label="Result for ${id}">
+              ${STATES.map(([k, l]) => `<label data-k="${k}"><input type="radio" name="r-${id}" value="${k}"><span>${l}</span></label>`).join('')}
+            </div>
+            <textarea class="a-note" id="n-${id}" rows="1" placeholder="Note (what you saw, request IDs, screenshot name)" aria-label="Note for ${id}"></textarea>
+          </div>`; }).join('')}
+      </div>
+      ${autoShots && autoShots.length ? `<div><h3>Screenshots</h3></div>${shots(autoShots)}` : ''}
+      ${c.automatable ? `<details><summary>Rerun this case</summary>${codeBlock('snip-' + c.test_id, rerun(c.test_id))}</details>` : ''}
+      <details><summary>Test case (JSON)</summary>${codeBlock('json-' + c.test_id, JSON.stringify(c.json, null, 2))}</details>
+    </section>`;
+  }).join('') || '<section class="card"><p class="muted">The run produced no test cases.</p></section>';
+}
+
+function renderRaw() {
+  document.getElementById('snip-all').textContent = rerun('');
+  document.getElementById('criteria').innerHTML = (D.criteria || []).map((c, i) => `<li><strong>AC-${i + 1}</strong> ${esc(c)}</li>`).join('') || '<li class="muted">None recorded.</li>';
+  document.getElementById('snip-xray').textContent = JSON.stringify(D.xray || [], null, 2);
+  document.getElementById('snip-auto').textContent = JSON.stringify({ counts: D.counts,
+    tests: (D.automation || []).map(({ screenshots, ...t }) => ({ ...t, screenshots: screenshots.map(s => s.name) })) }, null, 2);
+}
+
+function applyMarks() {
+  document.querySelectorAll('.assert').forEach(row => {
+    const id = row.dataset.a, s = state.marks[id];
+    row.dataset.s = s || '';
+    row.querySelectorAll('.seg label').forEach(l => {
+      const on = l.dataset.k === s;
+      l.className = on ? 'on-' + l.dataset.k : '';
+      l.querySelector('input').checked = on;
+    });
+    const n = row.querySelector('textarea'); if (document.activeElement !== n) n.value = state.notes[id] || '';
+  });
+}
+
+function counts(list) {
+  const c = { pass: 0, fail: 0, block: 0, unv: 0, todo: 0 };
+  list.forEach(id => { c[state.marks[id] || 'todo']++; });
+  return c;
+}
+const pills = (c) => [['pass', 'p-pass', 'pass'], ['fail', 'p-fail', 'fail'], ['block', 'p-block', 'blocked'], ['unv', 'p-unv', 'unverified'], ['todo', 'p-todo', 'to do']]
+  .filter(([k]) => c[k]).map(([k, cls, l]) => `<span class="pill ${cls}">${c[k]} ${l}</span>`).join('');
+
+function updateTally() {
+  const all = allIds(), c = counts(all);
+  document.getElementById('tally').innerHTML = pills(c);
+  document.getElementById('prog').style.width = all.length ? ((all.length - c.todo) / all.length * 100) + '%' : '0';
+  cases.forEach(tc => { const el = document.querySelector(`[data-tally="${CSS.escape(tc.test_id)}"]`);
+    if (el) el.innerHTML = pills(counts(tc.steps.map((_, i) => aId(tc.test_id, i)))); });
+  document.getElementById('out').value = resultsMd();
+}
+
+function resultsMd() {
+  const f = state.fields || {}, lbl = Object.fromEntries(STATES), cell = (s) => String(s || '').replace(/\|/g, '\\|').replace(/\s*\n+\s*/g, ' ');
+  const lines = [
+    `**${D.ticket_id} QA check** — ${f.build || 'build not set'}${f.tester ? ' · ' + f.tester : ''}`,
+    `Environment: ${f.env || D.target_url || '—'} · Run \`${D.run_id}\``,
+    `Automation: ${D.ran ? Object.entries(D.counts || {}).map(([k, n]) => `${n} ${k}`).join(', ') : 'not run'}`, '',
+    '| TC | # | Expected result | Automation | Result | Note |', '|---|---|---|---|---|---|'
+  ];
+  cases.forEach(c => c.steps.forEach((s, i) => {
+    const id = aId(c.test_id, i);
+    lines.push(`| ${c.test_id} | ${id} | ${cell(s.expected_result)} | ${c.automation ? c.automation.status : (c.automatable ? 'not run' : 'manual')} | ${state.marks[id] ? lbl[state.marks[id]] : 'Not run'} | ${cell(state.notes[id])} |`);
+  }));
+  const g = D.gaps || {}, c = counts(allIds());
+  lines.push('', `Totals: ${c.pass} pass · ${c.fail} fail · ${c.block} blocked · ${c.unv} unverified · ${c.todo} not run.`);
+  if ((g.uncovered_criteria || []).length) lines.push(`Uncovered criteria: ${g.uncovered_criteria.map(x => 'AC-' + x.n).join(', ')}.`);
+  if ((g.manual_only || []).length) lines.push(`Manual-only cases: ${g.manual_only.join(', ')}.`);
+  return lines.join('\n');
+}
+
+let toastT;
+function toast(msg) { const t = document.getElementById('toast'); t.textContent = msg; t.hidden = false; clearTimeout(toastT); toastT = setTimeout(() => { t.hidden = true; }, 1800); }
+async function copyText(text, fallbackEl, what) {
+  try { await navigator.clipboard.writeText(text); toast(what + ' copied'); }
+  catch (e) {
+    if (fallbackEl) { const r = document.createRange(); r.selectNodeContents(fallbackEl); const s = getSelection(); s.removeAllRanges(); s.addRange(r); if (fallbackEl.select) fallbackEl.select(); }
+    toast('Copy blocked. The text is selected: press Ctrl+C');
+  }
+}
+
+function armed(button, label, action) {
+  let on = false, t;
+  button.addEventListener('click', () => {
+    if (!on) { on = true; button.textContent = 'Click again to confirm'; t = setTimeout(() => { on = false; button.textContent = label; }, 3000); return; }
+    clearTimeout(t); on = false; button.textContent = label; action();
+  });
+}
+
+function start() {
+  renderHead(); renderAutomation(); renderGaps(); renderCases(); renderRaw();
+  [['f-env', 'env'], ['f-build', 'build'], ['f-tester', 'tester']].forEach(([el, k]) => {
+    const input = document.getElementById(el); input.value = (state.fields || {})[k] || '';
+    input.addEventListener('input', () => { state.fields = { ...state.fields, [k]: input.value }; save(); updateTally(); });
+  });
+  document.addEventListener('change', e => {
+    const r = e.target; if (r.type !== 'radio') return;
+    state.marks[r.name.slice(2)] = r.value; save(); applyMarks(); updateTally();
+  });
+  document.addEventListener('click', e => {
+    const lab = e.target.closest('.seg label');
+    if (lab) { const id = lab.querySelector('input').name.slice(2); if (state.marks[id] === lab.dataset.k) { e.preventDefault(); delete state.marks[id]; save(); applyMarks(); updateTally(); } }
+    const b = e.target.closest('button[data-copy]');
+    if (b) { const pre = document.getElementById(b.dataset.copy); copyText(pre.textContent, pre, 'Text'); }
+    const z = e.target.closest('a[data-zoom]');
+    if (z) { e.preventDefault(); const lb = document.getElementById('lightbox'); lb.querySelector('img').src = z.getAttribute('href'); lb.hidden = false; }
+  });
+  document.getElementById('lightbox').addEventListener('click', e => { e.currentTarget.hidden = true; });
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') document.getElementById('lightbox').hidden = true; });
+  document.addEventListener('input', e => {
+    const n = e.target; if (!n.classList.contains('a-note')) return;
+    state.notes[n.id.slice(2)] = n.value; save(); updateTally();
+  });
+  document.getElementById('copyRes').addEventListener('click', () => copyText(resultsMd(), document.getElementById('out'), 'Results'));
+  armed(document.getElementById('prefill'), 'Reset to automation', () => {
+    const fields = state.fields; state = automationState(); state.fields = fields; save(); applyMarks(); updateTally(); toast('Marks reset to the automation run');
+  });
+  armed(document.getElementById('reset'), 'Clear marks', () => {
+    state.marks = {}; state.notes = {}; save(); applyMarks(); updateTally(); toast('Marks and notes cleared');
+  });
+  applyMarks(); updateTally();
+  if (location.hash) { const t = document.getElementById(decodeURIComponent(location.hash.slice(1))); if (t) t.scrollIntoView(); }
+}
+start();
+</script>
+</body>
+</html>

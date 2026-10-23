@@ -293,6 +293,8 @@ def _print_outputs(state: Dict[str, Any], show: List[str]) -> None:
     if state.get("final_report") and ("report" in show or "all" in show):
         print("\n== Report ==")
         print(state["final_report"])
+    if state.get("report_html_path"):
+        print(f"\nHTML report (manual checklist): {state['report_html_path']}")
 
 
 # -------------------------------------------------------------------- eval --

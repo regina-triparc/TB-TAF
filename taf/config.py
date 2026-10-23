@@ -225,6 +225,10 @@ class Settings:
     qa_db_path: str = field(default_factory=lambda: env_str("QA_DB_PATH", "qa_runs.db"))
     dashboard_target_url: str = field(default_factory=lambda: env_str("DASHBOARD_TARGET_URL"))
     seed_tickets_path: str = field(default_factory=lambda: env_str("SEED_TICKETS_PATH", "data/seed_tickets.json"))
+    # One self-contained HTML report per run (manual checklist, automation results,
+    # screenshots, gaps), written by the Report Synthesizer: <REPORTS_DIR>/<TICKET>-<run>.html
+    reports_dir: str = field(default_factory=lambda: env_str("REPORTS_DIR", "reports"))
+    report_max_screenshots: int = field(default_factory=lambda: env_int("REPORT_MAX_SCREENSHOTS", 40))
 
     # --- Service ------------------------------------------------------------
     qa_service_api_key: str = field(default_factory=lambda: env_str("QA_SERVICE_API_KEY"))

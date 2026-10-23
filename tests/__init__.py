@@ -28,6 +28,7 @@ os.environ.update({
     "TEST_REPO_ENV_FILE": "",
     "QA_DB_PATH": os.path.join(_TMP, "qa_runs.db"),
     "QA_CHECKPOINT_DB_PATH": os.path.join(_TMP, "qa_checkpoints.db"),
+    "REPORTS_DIR": os.path.join(_TMP, "reports"),
     "GIT_PUSH_ENABLED": "false",
     "PR_CREATE_ENABLED": "false",
     "REQUIRE_APPROVAL": "true",

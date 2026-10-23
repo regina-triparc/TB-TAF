@@ -45,13 +45,17 @@ def _walk(suite: Dict[str, Any], out: List[TestResult]) -> None:
             results = test.get("results") or [{}]
             last = results[-1]
             error = (last.get("error") or {}).get("message") or ""
-            context = next((a.get("path") for a in last.get("attachments") or []
+            attachments = last.get("attachments") or []
+            context = next((a.get("path") for a in attachments
                             if a.get("name") == "error-context" and a.get("path")), None)
+            screenshots = [a["path"] for a in attachments
+                           if a.get("path") and str(a.get("contentType", "")).startswith("image/")]
             title = spec.get("title", "")
             tc = _TC_RE.search(title)
             out.append({"title": title, "tc": tc.group(1) if tc else "", "status": _status(test),
                         "duration_ms": sum(int(r.get("duration") or 0) for r in results),
-                        "error": _ANSI_RE.sub("", error)[:2000], "error_context": context or ""})
+                        "error": _ANSI_RE.sub("", error)[:2000], "error_context": context or "",
+                        "screenshots": screenshots})
     for child in suite.get("suites") or []:
         _walk(child, out)
 

@@ -20,6 +20,7 @@ class QAState(TypedDict, total=False):
     xray_tests_json: List[Dict[str, Any]]  # Xray Cloud bulk-import payload
     xray_files: List[str]                  # where it was written in the test repo (XRAY_DIR/<TICKET>/...)
     final_report: str
+    report_html_path: str               # the HTML report (manual checklist + automation results)
 
     # --- Operational fields -------------------------------------------------
     run_id: str
