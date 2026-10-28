@@ -134,7 +134,7 @@ One run of **Full run** (dashboard) or `python -m taf run TB-601 --stage full`:
 | 6 | **Playwright run** against the target, then a **review** (rules, plus an optional LLM review). | `taf/steps/validation.py`, `taf/steps/review.py` | the UAT portal (Playwright) |
 | 7 | **Approval:** the run pauses until a person approves (dashboard or `taf resume`). | `taf/steps/publish.py` | none |
 | 8 | **Publish:** commit spec + `xray/<TICKET>/` on `qa/<TICKET>`, push, open a PR (each optional, never repeated on resume). | `taf/steps/publish.py`, `taf/integrations/github/pr_api.py` | GitHub: `tripbuilder-e2e` (push, pull request) |
-| 9 | **Report Synthesizer:** a Markdown report from the logs. The verdict header is built in Python, so the model cannot change it. | `taf/agents/reporter/` | Ollama, or the built-in fallback |
+| 9 | **Report Synthesizer:** a Markdown report from the logs (the verdict header is built in Python, so the model cannot change it), and an HTML report: a manual checklist pre-filled from the automation run, with screenshots, JSON and gaps. | `taf/agents/reporter/` | Ollama, or the built-in fallback |
 | - | **Recorded:** every phase and its output, for the dashboard. | `taf/runs/store.py` | none (local SQLite) |
 | later | **Export:** after the PR is merged, `taf xray export` imports the reviewed test cases. | `taf/integrations/jira/xray_cloud.py` | Xray Cloud API |
 
@@ -376,7 +376,7 @@ taf/                           the service, as a package
     triage/                    Agent 1  criteria, impacted areas, risks           prompt.md
     architect/                 Agent 2  test plan + Xray test cases               prompt.md, local-model-limits.md
     automation/                Agent 3  spec + xray/ into the test repo, run      prompt.md, repair-prompt.md
-    reporter/                  Agent 4  logs -> Markdown report                   prompt.md
+    reporter/                  Agent 4  logs -> Markdown report + HTML checklist  prompt.md, report-template.html
     closeout/                  Agent 5  optional n8n callback (unused locally)
     base.py                    the envelope every agent runs in (events, error handling)
     schemas.py, state.py       structured outputs and the shared LangGraph state
@@ -771,6 +771,13 @@ Relative paths are resolved from the project root. Environment variables overrid
 | `PLAYWRIGHT_INSTALL_BROWSERS` | `false` | Install Chromium before every run. |
 | `PAGE_CONTRACT_PATH` | the TripBuilder contract in `.env.example` | Real roles/labels/test IDs of the app under test. |
 | `DASHBOARD_TARGET_URL` | the TripBuilder UAT portal in `.env.example` | Target for runs without `--target-url`. |
+
+**HTML run report**
+
+| Variable | Default | Description |
+|---|---|---|
+| `REPORTS_DIR` | `reports` | Where each run's HTML report goes (`<TICKET>-<run>.html`), and its usage report (`usage/<TICKET>-<run>.md` / `.json`, plus `usage/usage.csv` across runs): tokens, cost, model and time per stage. |
+| `REPORT_MAX_SCREENSHOTS` | `40` | Failure screenshots inlined into one report. |
 
 **Xray**
 

@@ -341,7 +341,8 @@ function renderPanel(detail) {
     if (p.phase === "approval") return renderApproval(a);
     if (p.phase === "publish") return renderPublish(a);
     if (p.phase === "report" && a.report_markdown)
-      return section("Report", (a.trace_url ? `<div class="kv"><a href="${esc(a.trace_url)}" target="_blank" rel="noopener">Langfuse trace</a></div>` : "") +
+      return section("Report", (a.report_html_path ? `<div class="kv"><a href="/dashboard/report/${encodeURIComponent(detail.run_id)}" target="_blank" rel="noopener">Open HTML report (manual checklist)</a></div>` : "") +
+                     (a.trace_url ? `<div class="kv"><a href="${esc(a.trace_url)}" target="_blank" rel="noopener">Langfuse trace</a></div>` : "") +
                      `<pre>${esc(a.report_markdown)}</pre>`);
     return "";
   }).filter(Boolean).join("");

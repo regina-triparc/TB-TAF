@@ -171,6 +171,19 @@ def run_detail(run_id: str) -> Dict[str, Any]:
     raise HTTPException(status_code=404, detail="No such run")
 
 
+@router.get("/report/{run_id}")
+def report_html(run_id: str) -> FileResponse:
+    """The run's HTML report (manual checklist pre-filled from the automation run)."""
+    for run in get_store().recent_runs(limit=300):
+        if run["run_id"] != run_id:
+            continue
+        for phase in run.get("phases") or []:
+            path = (phase.get("artifact") or {}).get("report_html_path") if phase.get("phase") == "report" else ""
+            if path and Path(path).is_file():
+                return FileResponse(path, media_type="text/html")
+    raise HTTPException(status_code=404, detail="No HTML report for this run")
+
+
 @router.get("/api/runs")
 def runs(limit: int = 50) -> Dict[str, Any]:
     return {"runs": get_store().recent_runs(limit=limit)}

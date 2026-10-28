@@ -28,6 +28,8 @@ class StageRunnerTest(unittest.TestCase):
         self.assertIn("test.describe", final["generated_typescript_code"])
         self.assertIn("NOT written to the test repository", final["execution_logs"])
         self.assertIn("## QA Report - TB-601", final["final_report"])
+        self.assertTrue(final["report_html_path"].endswith(".html"))
+        self.assertIn("TB-601 QA Report", open(final["report_html_path"], encoding="utf-8").read())
 
         run = next(r for r in get_store().recent_runs() if r["run_id"] == state["run_id"])
         self.assertEqual([p["phase"] for p in run["phases"]], ["triage", "architect", "automation", "report"])

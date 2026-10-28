@@ -15,6 +15,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 
 from taf.agents.base import agent_node
 from taf.agents.prompts import load_prompt
+from taf.agents.reporter.html_report import write_html_report
 from taf.agents.state import QAState
 from taf.config import SETTINGS
 from taf.core.text import message_text, truncate_middle, utc_now
@@ -23,6 +24,7 @@ from taf.llm.budget import BUDGET
 from taf.llm.pricing import token_usage
 from taf.llm.router import ROUTER
 from taf.observability.tracing import TRACER
+from taf.runs.usage import USAGE
 
 log = logging.getLogger("qa")
 
@@ -92,6 +94,9 @@ def report_synthesizer(state: QAState) -> Dict[str, Any]:
         header.append(f"**Pull request:** {pr_url}  ")
     if trace_url:
         header.append(f"**Trace:** {trace_url}  ")
+    html_path = write_html_report({**state, "trace_url": trace_url})
+    if html_path:
+        header.append(f"**HTML report:** `{html_path}`  ")
     if counts:
         header.append("**Playwright:** " + ", ".join(f"{v} {k}" for k, v in counts.items()) + "  ")
     cache_reads = BUDGET.run_cache_read_tokens(run_id)
@@ -123,6 +128,7 @@ def report_synthesizer(state: QAState) -> Dict[str, Any]:
                                      f"```\n{truncate_middle(logs, SETTINGS.max_exec_log_chars_for_llm)}\n```"),
             ], config=report_config(state))
             local_usage = token_usage(response)
+            USAGE.record_call(run_id, "Report Synthesizer", "ollama", SETTINGS.ollama_model, local_usage)
             CONTROL_ROOM.emit(run_id, ticket_id, "llm.usage", agent="Report Synthesizer",
                               provider="ollama", model=SETTINGS.ollama_model, billing_type="fixed",
                               input_tokens=local_usage.input_tokens, output_tokens=local_usage.output_tokens,
@@ -135,7 +141,7 @@ def report_synthesizer(state: QAState) -> Dict[str, Any]:
             body = fallback_report_body(state)
 
     return {"final_report": "\n".join(header) + "\n\n" + body, "execution_passed": passed,
-            "trace_url": trace_url}
+            "trace_url": trace_url, "report_html_path": html_path}
 
 
 def report_config(state: QAState) -> Dict[str, Any]:

@@ -25,7 +25,7 @@ param(
   [string]$Provider = "",
   [string]$TestRepo = "..\tripbuilder-e2e",
   [switch]$Push,
-  [int]$Port = 8000,
+  [int]$Port = 8002,
   [switch]$NoBrowser
 )
 $NeedsTestRepo = $true
