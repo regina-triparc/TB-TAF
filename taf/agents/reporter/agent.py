@@ -24,6 +24,7 @@ from taf.llm.budget import BUDGET
 from taf.llm.pricing import token_usage
 from taf.llm.router import ROUTER
 from taf.observability.tracing import TRACER
+from taf.runs.usage import USAGE
 
 log = logging.getLogger("qa")
 
@@ -127,6 +128,7 @@ def report_synthesizer(state: QAState) -> Dict[str, Any]:
                                      f"```\n{truncate_middle(logs, SETTINGS.max_exec_log_chars_for_llm)}\n```"),
             ], config=report_config(state))
             local_usage = token_usage(response)
+            USAGE.record_call(run_id, "Report Synthesizer", "ollama", SETTINGS.ollama_model, local_usage)
             CONTROL_ROOM.emit(run_id, ticket_id, "llm.usage", agent="Report Synthesizer",
                               provider="ollama", model=SETTINGS.ollama_model, billing_type="fixed",
                               input_tokens=local_usage.input_tokens, output_tokens=local_usage.output_tokens,

@@ -11,6 +11,7 @@ from typing import Dict
 from taf.config import SETTINGS, Settings
 from taf.integrations.paperclip.control_room import CONTROL_ROOM, ControlRoom
 from taf.llm.pricing import TokenUsage, price_cents
+from taf.runs.usage import USAGE
 
 
 class BudgetExceededError(RuntimeError):
@@ -66,6 +67,7 @@ class TokenBudget:
     def record(self, run_id: str, ticket_id: str, agent: str, usage: TokenUsage, model: str,
                provider: str = "anthropic") -> None:
         exact_cents = price_cents(model, usage, local=(provider == "ollama"))
+        USAGE.record_call(run_id, agent, provider, model, usage, exact_cents)
         with self._lock:
             self._roll_day()
             self._run_usage[run_id] = self._run_usage.get(run_id, 0) + usage.budget_tokens

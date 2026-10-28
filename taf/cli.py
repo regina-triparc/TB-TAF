@@ -295,6 +295,8 @@ def _print_outputs(state: Dict[str, Any], show: List[str]) -> None:
         print(state["final_report"])
     if state.get("report_html_path"):
         print(f"\nHTML report (manual checklist): {state['report_html_path']}")
+    if state.get("usage_report_path"):
+        print(f"Usage report (tokens, models, time per stage): {state['usage_report_path']}")
 
 
 # -------------------------------------------------------------------- eval --

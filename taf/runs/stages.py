@@ -33,6 +33,7 @@ from taf.llm.budget import BUDGET
 from taf.llm.router import ROUTER
 from taf.observability.tracing import TRACER
 from taf.runs.store import get_store
+from taf.runs.usage import USAGE
 from taf.steps.context import gather_diff  # noqa: F401  (re-exported: used by callers and tests)
 
 STAGE_NODES: Dict[str, List[str]] = {
@@ -145,6 +146,7 @@ class PhaseRecorder:
             return
         self.close()
         self.phase, self.errors, self.started = phase, [], time.monotonic()
+        USAGE.set_stage(self.run_id, phase)
         if phase != "context":  # context is shown live, not stored - as before
             self.row = self.store.phase_started(self.run_id, self.ticket_id, phase)
         self.notify(phase, "running", "")
@@ -159,13 +161,16 @@ class PhaseRecorder:
         if self.phase is None:
             return
         state = self.values()
-        elapsed = int(time.monotonic() - self.started)
+        took = time.monotonic() - self.started
+        elapsed = int(took)
         failed = bool(self.errors) or outcome == "failed"
+        final = {"waiting": "waiting", "cancelled": "cancelled"}.get(outcome, "failed" if failed else "ok")
+        USAGE.stage_finished(self.run_id, self.phase, took, final)
+        USAGE.set_stage(self.run_id, None)
         if self.phase == "context":
             self.notify("context", "ok", "; ".join(state.get("context_notes") or []))
         else:
             detail = "; ".join(self.errors)[:500] if failed and self.errors else phase_detail(self.phase, state, elapsed)
-            final = {"waiting": "waiting", "cancelled": "cancelled"}.get(outcome, "failed" if failed else "ok")
             if self.row is not None:
                 if final == "waiting":
                     self.store.phase_update(self.row, "waiting", detail, phase_artifact(self.phase, state))
@@ -232,6 +237,8 @@ def _drive(run_id: str, ticket_id: str, graph_input: Any, on_phase: Optional[OnP
     # The run's state as the stream reports it. Reading the checkpoint mid-run can lag
     # (checkpoints are written asynchronously), so phase details use this instead.
     current: Dict[str, Any] = dict(graph_input) if isinstance(graph_input, dict) else         dict(graph.get_state(config).values)
+    provider = current.get("llm_provider") or ""
+    USAGE.begin(run_id, ticket_id, provider, ROUTER.describe(provider)["routes"])
     recorder = PhaseRecorder(run_id, ticket_id, notify, lambda: current)
     trace_state = current
     interrupted: Any = None
@@ -265,18 +272,21 @@ def _drive(run_id: str, ticket_id: str, graph_input: Any, on_phase: Optional[OnP
                 store.set_run_state(run_id, "waiting")
                 final["_run_state"] = "waiting"
                 final["_approval_request"] = pending_approval(run_id)
+                final["usage_report_path"] = USAGE.write_report(run_id, "waiting", release=False)
                 root.update(output={"status": "waiting for approval"})
                 return final
             if cancelled:
                 recorder.close("cancelled")
                 store.finish_run(run_id, "cancelled", error="cancelled - resume with `python -m taf resume`")
                 final["_run_state"] = "cancelled"
+                final["usage_report_path"] = USAGE.write_report(run_id, "cancelled")
                 return final
             if crashed is not None:
                 recorder.errors.append(f"{type(crashed).__name__}: {crashed}")
                 recorder.close("failed")
                 store.finish_run(run_id, "failed", error=f"crashed: {type(crashed).__name__}: {crashed}"[:500])
                 final["_run_state"] = "failed"
+                final["usage_report_path"] = USAGE.write_report(run_id, "failed")
                 return final
 
             recorder.close()
@@ -286,6 +296,7 @@ def _drive(run_id: str, ticket_id: str, graph_input: Any, on_phase: Optional[OnP
             store.finish_run(run_id, run_state, outcome=outcome if run_state == "completed" else "",
                              error="; ".join(str(e) for e in errors)[:500])
             final["_run_state"] = run_state
+            final["usage_report_path"] = USAGE.write_report(run_id, run_state)
             _score(run_id, final)
             root.update(output={"run_state": run_state, "execution_passed": bool(final.get("execution_passed")),
                                 "pr_url": (final.get("publish") or {}).get("pr_url"), "errors": len(errors)},

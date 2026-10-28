@@ -776,7 +776,7 @@ Relative paths are resolved from the project root. Environment variables overrid
 
 | Variable | Default | Description |
 |---|---|---|
-| `REPORTS_DIR` | `reports` | Where each run's HTML report goes (`<TICKET>-<run>.html`). |
+| `REPORTS_DIR` | `reports` | Where each run's HTML report goes (`<TICKET>-<run>.html`), and its usage report (`usage/<TICKET>-<run>.md` / `.json`, plus `usage/usage.csv` across runs): tokens, cost, model and time per stage. |
 | `REPORT_MAX_SCREENSHOTS` | `40` | Failure screenshots inlined into one report. |
 
 **Xray**

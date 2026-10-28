@@ -15,7 +15,9 @@ from taf.config import redact
 from taf.core.text import utc_now
 from taf.integrations.paperclip.control_room import CONTROL_ROOM
 from taf.llm.budget import BUDGET
+from taf.llm.router import ROUTER
 from taf.observability.tracing import TRACER
+from taf.runs.usage import USAGE
 
 log = logging.getLogger("qa")
 
@@ -53,6 +55,9 @@ def execute_qa_run(initial_state: QAState) -> None:
     """Background task: run the full LangGraph pipeline for one ticket."""
     run_id, ticket_id = initial_state["run_id"], initial_state["ticket_id"]
     RUNS.update(run_id, status="running", started_at=utc_now())
+    provider = initial_state.get("llm_provider") or ""
+    USAGE.begin(run_id, ticket_id, provider, ROUTER.describe(provider)["routes"])
+    run_state = "failed"
     CONTROL_ROOM.emit(run_id, ticket_id, "run.started", summary=initial_state.get("summary", ""),
                       target_url=initial_state.get("target_url", ""))
     try:
@@ -63,8 +68,10 @@ def execute_qa_run(initial_state: QAState) -> None:
             # dashboard) continues it, and the closeout then calls n8n back.
             RUNS.update(run_id, status="waiting_approval", git_branch="", errors=final.get("errors", []))
             CONTROL_ROOM.emit(run_id, ticket_id, "run.waiting", reason="approval required")
+            run_state = "waiting"
             return
         outcome = "QA Passed" if final.get("execution_passed") else "QA Failed"
+        run_state = "completed"
         RUNS.update(
             run_id,
             status="completed",
@@ -86,5 +93,7 @@ def execute_qa_run(initial_state: QAState) -> None:
         RUNS.update(run_id, status="crashed", finished_at=utc_now(), errors=[redact(str(exc))])
         CONTROL_ROOM.emit(run_id, ticket_id, "run.crashed", error=redact(str(exc)))
     finally:
+        # No stage recorder on this path: tokens are booked per agent, not per stage.
+        USAGE.write_report(run_id, run_state, release=run_state != "waiting")
         BUDGET.release(run_id)
         TRACER.flush()
