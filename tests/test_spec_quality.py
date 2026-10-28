@@ -206,6 +206,26 @@ class SpecRulesTest(unittest.TestCase):
         self.assertIn("6:30 PM", self.findings(code)["option values from the UI"]["detail"])
         self.assertNotIn("option values from the UI", self.findings(SPEC + "\nawait form.pickTime('Start', '18:30');\n"))
 
+    def test_hard_coded_dates_are_a_blocker(self):
+        for line in ("await expect(form.date).toHaveValue('2026-12-03');",
+                     "await expect(sheet.schedule).toContainText('Date Dec 3, 2026');",
+                     "await expect(itinerary.dayCard('Day 3')).toContainText('Dec 3');",
+                     "const start = new Date('2026-12-01');"):
+            found = self.findings(SPEC + "\n" + line + "\n")
+            self.assertEqual("blocker", found["no hard-coded dates"]["severity"], line)
+
+    def test_derived_dates_and_comments_are_not_flagged(self):
+        for line in ("await expect(form.date).toHaveValue(/^\\d{4}-\\d{2}-\\d{2}$/);",
+                     "const day = (await itinerary.dayTitle('Day 3')).split('·')[1].trim(); // e.g. Dec 3",
+                     "/* captured 2026-10-21 */ await page.goto('https://example.com/');",
+                     "const title = `QA TB-644 ${Date.now()}`;"):
+            self.assertNotIn("no hard-coded dates", self.findings(SPEC + "\n" + line + "\n"), line)
+
+    def test_page_contract_example_passes_the_date_rule(self):
+        contract = Path(__file__).resolve().parents[1] / "skills/page-contracts/tripbuilder-tsp.md"
+        example = contract.read_text(encoding="utf8").split("```ts", 1)[1].split("```", 1)[0]
+        self.assertNotIn("no hard-coded dates", self.findings(example))
+
 
 if __name__ == "__main__":
     unittest.main()

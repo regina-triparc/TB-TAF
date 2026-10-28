@@ -39,6 +39,13 @@ _TOP_LEVEL_FN_RE = re.compile(r"^(?:export\s+)?(?:async\s+)?function\s+(\w+)", r
 _UNNAMED_ROLE_RE = re.compile(r"\bpage\.getByRole\(\s*['\"](\w+)['\"]\s*\)")
 _TWELVE_HOUR_OPTION_RE = re.compile(
     r"(?:pickTime\([^)]*?|getByRole\(\s*['\"]option['\"]\s*,\s*\{\s*name:\s*)['\"](\d{1,2}:\d{2}\s?[AP]M)['\"]", re.I)
+# A date in the code ('2026-12-03', 'Dec 3, 2026', '3 Dec 2026', 'Dec 3') only holds for one trip.
+_MONTH = r"(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\.?"
+_DATE_LITERAL_RE = re.compile(
+    rf"\b(?:19|20)\d{{2}}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])\b"
+    rf"|\b{_MONTH}\s+\d{{1,2}}\b(?:,?\s+(?:19|20)\d{{2}}\b)?"
+    rf"|\b\d{{1,2}}\s+{_MONTH}\s+(?:19|20)\d{{2}}\b")
+_COMMENT_RE = re.compile(r"/\*.*?\*/|(?<![:'\"`\\])//.*?$", re.DOTALL | re.MULTILINE)
 
 
 def finding(severity: str, rule: str, detail: str) -> Finding:
@@ -83,6 +90,11 @@ def rule_review(code: str, cases: List[Dict[str, Any]], criteria: List[str],
     if _SECRET_RE.search(code):
         out.append(finding("blocker", "no hard-coded secrets", "a credential-like literal is in the spec - "
                                                                "read it from process.env"))
+    dates = sorted(set(_DATE_LITERAL_RE.findall(_COMMENT_RE.sub("", code))))
+    if dates:
+        out.append(finding("blocker", "no hard-coded dates",
+                           f"date literal(s) {dates[:5]} only hold for one trip - read the date from the "
+                           "page (dayTitle) or check its format, e.g. /^\\d{4}-\\d{2}-\\d{2}$/"))
 
     titles = [m.group(2) for m in _TITLE_RE.finditer(code)]
     duplicates = [t for t, n in Counter(titles).items() if n > 1]
