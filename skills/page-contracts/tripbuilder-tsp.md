@@ -41,7 +41,8 @@ Price and commission are read from this group (`priceAndCommission()`). There is
 
 ## Itinerary structure
 
-- 6 day cards (`.itin__day-card`), each titled `Day 3 · Dec 3` (`.itin__day-title`).
+- 6 day cards (`.itin__day-card`), each titled `Day 3 · <Mon D>` (`.itin__day-title`); the
+  date is the trip's own, so read it with `dayTitle('Day 3')`.
 - `button "add Add Service"` appears N+1 times for N days:
   - the FIRST is the **toolbar** button, outside the day cards;
   - each day card's own button is the last element of that card.
@@ -74,7 +75,7 @@ After a day is picked, the service-type picker above opens for that day.
     dialog "Add Info"                      ("Edit Info" from Modify)
       button "Close"
       textbox "Title"                      placeholder "Dinner at Taberna Real"
-      textbox "Date" [disabled]            "2026-12-03" when opened from Day 3
+      textbox "Date" [disabled]            "YYYY-MM-DD" of the day it was opened from
       combobox "Start" -> listbox "Start" -> 96 options "00:00" ... "23:45"
       combobox "End"   -> listbox "End"   -> same options
       .ql-editor                           rich-text description (no accessible name)
@@ -99,7 +100,7 @@ After a day is picked, the service-type picker above opens for that day.
       tablist
         tab "Details" [selected]
         tab "Travellers"                   (Hotel: Details, Booking, Travellers, T&Cs)
-      [data-test="sds-schedule"]           "Date Dec 3, 2026 Start 6:30 PM End 8:00 PM"
+      [data-test="sds-schedule"]           "Date <Mon D, YYYY> Start 6:30 PM End 8:00 PM"
       [data-test="sds-info-description"]   only when the Info has a description
       button "Back"
 
@@ -138,8 +139,22 @@ Do not write tests that depend on Activity services rendering.
 4. **Create the data a test changes, with a unique title (`QA <case> ${Date.now()}`), and
    delete it in `afterEach`** with `deleteInfosStartingWith(prefix)`: a cleanup step at the
    end of the test never runs when an assertion fails, and leftovers break later runs.
-5. **Every test opens the trip in `beforeEach`** with `TripItineraryPage.openTrip(/Best Of Bangkok/)`.
-6. **Keep it minimal.** One `test.describe`, the given test cases, no helper functions.
+5. **A test creates the trip it asserts on.** A test that checks trip-level data - the
+   party (adults, children), rooms, trip dates, prices or status - needs its own trip with
+   known values, created in `test.beforeEach` / `test.beforeAll` and deleted in
+   `afterEach` / `afterAll`. Never assert those values on a shared trip such as "Best Of
+   Bangkok": other runs and people change it. The test repository has no trip-creation
+   page object or API helper yet; until it has one, write such a test as
+   `test.fixme(true, 'needs a trip-creation setup helper (party, rooms, dates)')` with its
+   setup and checks as comments. Do not build a trip with raw locators in the spec.
+6. **Only tests that add, edit or delete their own Info items use the shared trip**, opened
+   in `beforeEach` with `TripItineraryPage.openTrip(/Best Of Bangkok/)`.
+7. **Never hard-code a date or a year** (`'2026-12-03'`, `'Dec 3, 2026'`, `'Dec 3'`,
+   `new Date('...')`). Trip dates differ per trip and move when a trip is edited, so the
+   test fails on any other data. Read the expected date from the page: `dayTitle('Day 3')`
+   returns "Day 3 · <Mon D>"; take the part after `·` and expect it on the sheet. For a
+   date input, check the format, not the value: `toHaveValue(/^\d{4}-\d{2}-\d{2}$/)`.
+8. **Keep it minimal.** One `test.describe`, the given test cases, no helper functions.
 
 ## A correct example - follow this shape
 
@@ -163,8 +178,9 @@ test.describe('TB-601: Info services', () => {
 
   test('[TC-002] adding an Info from Day 3 shows it with times on the sheet', async () => {
     const title = `${PREFIX} sunset ${Date.now()}`;
+    const day = (await itinerary.dayTitle('Day 3')).split('·')[1].trim(); // this trip's date, e.g. "Mon D"
     const form = await itinerary.openAddInfo('Day 3');
-    await expect(form.date).toHaveValue('2026-12-03');
+    await expect(form.date).toHaveValue(/^\d{4}-\d{2}-\d{2}$/);
     await form.fill({ title, start: '18:30', end: '20:00' });
     const call = await form.submit();
     expect(call.status).toBe(202);
@@ -172,7 +188,14 @@ test.describe('TB-601: Info services', () => {
 
     const sheet = await itinerary.openInfoSheet(title);
     await expect(sheet.tabs).toHaveText(['Details', 'Travellers']);
+    await expect(sheet.schedule).toContainText(`Date ${day},`);
     await expect(sheet.schedule).toContainText(/Start\s*6:30 PM/); // picked 18:30, shown 12-hour
+  });
+
+  test('[TC-003] the trip header counts every traveller and room', async () => {
+    test.fixme(true, 'needs a trip-creation setup helper (party, rooms, dates)');
+    // beforeEach: create a trip with 2 adults, 1 child and 2 rooms; afterEach: delete it.
+    // Expect the trip header to show 2 adults, 1 child and 2 rooms.
   });
 });
 ```
