@@ -17,9 +17,11 @@ graph sends a rejected spec back here with the reason (`spec_feedback`).
 
 1. `repo_context` (deterministic) prepares the test repo and reads its conventions;
    they are part of this agent's prompt, with exact import paths.
-   `ui_snapshot` (deterministic, read-only) then opens the live app with the test
-   repo's saved session and records the accessibility tree of each state listed in
-   `<page contract>.snapshot.json` (forms, dropdown options, sheets, pickers).
+   `ui_snapshot` (deterministic, read-only) then explores the live app with the test
+   repo's saved session (`ui_explorer.cjs`): it opens one item from the start page,
+   clicks the controls the ticket's keywords point at, and records the accessibility
+   tree of what each click revealed (dialogs, panels, dropdown options). Nothing about
+   the app is configured; the names it sees are sample data.
 2. **This agent** writes `e2e/qa/<TICKET>.spec.ts` as text.
 3. `validate_spec` rejects unsafe or unloadable specs (Node APIs, missing imports,
    `playwright test --list`, `tsc`, ESLint). A fixable failure comes back here with

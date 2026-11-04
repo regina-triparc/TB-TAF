@@ -45,6 +45,10 @@ _DATE_LITERAL_RE = re.compile(
     rf"\b(?:19|20)\d{{2}}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])\b"
     rf"|\b{_MONTH}\s+\d{{1,2}}\b(?:,?\s+(?:19|20)\d{{2}}\b)?"
     rf"|\b\d{{1,2}}\s+{_MONTH}\s+(?:19|20)\d{{2}}\b")
+# The shared account's trips come and go, and trips differ in length: a spec opens the QA
+# trip with openTrip() and picks days from dayLabels(), never by name or number.
+_OPEN_TRIP_ARG_RE = re.compile(r"\bopenTrip\(\s*[^)\s]")
+_DAY_LITERAL_RE = re.compile(r"['\"`](Day \d+)\b")
 _COMMENT_RE = re.compile(r"/\*.*?\*/|(?<![:'\"`\\])//.*?$", re.DOTALL | re.MULTILINE)
 
 
@@ -90,7 +94,17 @@ def rule_review(code: str, cases: List[Dict[str, Any]], criteria: List[str],
     if _SECRET_RE.search(code):
         out.append(finding("blocker", "no hard-coded secrets", "a credential-like literal is in the spec - "
                                                                "read it from process.env"))
-    dates = sorted(set(_DATE_LITERAL_RE.findall(_COMMENT_RE.sub("", code))))
+    uncommented = _COMMENT_RE.sub("", code)
+    if _OPEN_TRIP_ARG_RE.search(uncommented):
+        out.append(finding("blocker", "no hard-coded data",
+                           "openTrip(...) names a trip - trips on the shared account come and go; call openTrip() "
+                           "with no argument to open the QA trip the test repository configures"))
+    days = sorted(set(_DAY_LITERAL_RE.findall(uncommented)))
+    if days:
+        out.append(finding("blocker", "no hard-coded data",
+                           f"day label(s) {days[:5]} assume the trip's length - pick days from "
+                           "`await itinerary.dayLabels()`"))
+    dates = sorted(set(_DATE_LITERAL_RE.findall(uncommented)))
     if dates:
         out.append(finding("blocker", "no hard-coded dates",
                            f"date literal(s) {dates[:5]} only hold for one trip - read the date from the "

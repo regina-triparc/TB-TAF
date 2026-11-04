@@ -133,12 +133,14 @@ class Settings:
     skip_dependency_install: bool = field(default_factory=lambda: env_bool("SKIP_DEPENDENCY_INSTALL", False))
     # Markdown file of REAL roles/names captured from the app under test.
     page_contract_path: str = field(default_factory=lambda: env_str("PAGE_CONTRACT_PATH"))
-    # Live accessibility snapshot of the app, taken before the spec is written
-    # (taf/steps/ui_snapshot.py). The recipe defaults to the page contract's
-    # `<name>.snapshot.json`; the step skips itself when the recipe or the saved
-    # session is missing.
+    # Live UI exploration of the app, before the spec is written (taf/steps/ui_snapshot.py).
+    # Nothing app-specific is configured: the explorer opens one item from the start page
+    # (the first data row whose name matches LIVE_EXPLORE_ENTRY, else the first data row)
+    # and clicks what the ticket talks about, up to LIVE_EXPLORE_BUDGET clicks. Skips itself
+    # when the saved session is missing.
     live_snapshot_enabled: bool = field(default_factory=lambda: env_bool("LIVE_SNAPSHOT_ENABLED", True))
-    live_snapshot_recipe: str = field(default_factory=lambda: env_str("LIVE_SNAPSHOT_RECIPE"))
+    live_explore_entry: str = field(default_factory=lambda: env_str("LIVE_EXPLORE_ENTRY"))
+    live_explore_budget: int = field(default_factory=lambda: env_int("LIVE_EXPLORE_BUDGET", 12))
     live_snapshot_max_chars: int = field(default_factory=lambda: env_int("LIVE_SNAPSHOT_MAX_CHARS", 12_000))
     live_snapshot_timeout_s: int = field(default_factory=lambda: env_int("LIVE_SNAPSHOT_TIMEOUT_SECONDS", 420))
     # Repairs driven by the Playwright run itself (taf/steps/run_repair.py): failing

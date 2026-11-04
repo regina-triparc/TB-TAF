@@ -69,9 +69,9 @@ def parse_spec(answer: AIMessage) -> Tuple[Optional[str], Optional[str]]:
 
 def page_contract_block() -> str:
     """
-    Real roles and accessible names from the running app, appended to the prompt.
-    A model that has never seen the page invents selectors that compile and then
-    match nothing; this is the ground truth that stops it.
+    The app's page rules (how to drive it, how to treat its data), appended to the
+    prompt. Deliberately free of selectors and data names: those come from the page
+    objects and the live exploration, which do not go stale.
     """
     if not SETTINGS.page_contract_path:
         return ""
@@ -81,8 +81,8 @@ def page_contract_block() -> str:
     except OSError as exc:
         log.warning("PAGE_CONTRACT_PATH unreadable (%s)", exc)
         return ""
-    header = ("\n\n## Page contract - REAL selectors from the live app\n"
-              "These are authoritative. Use these roles and names verbatim; do not invent others.\n\n")
+    header = ("\n\n## Page rules for this app\n"
+              "Follow these rules. Concrete roles and names come from the page objects and the live snapshot.\n\n")
     return header + truncate_middle(text, 12_000)
 
 

@@ -5,6 +5,8 @@ that enforce the spec-authoring skill.
 """
 import itertools
 import json
+import shutil
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -18,7 +20,7 @@ from taf.steps.env_guards import env_guards
 from taf.steps.playwright_results import counts, parse_json_report, run_passed
 from taf.steps.review import rule_review
 from taf.steps.run_repair import changed, test_bodies, test_lines, weakened
-from taf.steps.ui_snapshot import parse_output, render_snapshot
+from taf.steps.ui_snapshot import explore_keywords, parse_output, render_snapshot
 from tests.support import DESCRIPTION, SPEC, Workbench, write_json_report
 
 _TICKETS = itertools.count(1)
@@ -313,10 +315,95 @@ class SpecRulesTest(unittest.TestCase):
                      "const title = `QA TB-644 ${Date.now()}`;"):
             self.assertNotIn("no hard-coded dates", self.findings(SPEC + "\n" + line + "\n"), line)
 
-    def test_page_contract_example_passes_the_date_rule(self):
+    def test_naming_a_trip_or_a_day_is_a_blocker(self):
+        for line in ("const TRIP = /Best Of Bangkok/;\nawait itinerary.openTrip(TRIP);",
+                     "await itinerary.openTrip('Lyon');",
+                     "const form = await itinerary.openAddInfo('Day 3');"):
+            found = self.findings(SPEC + "\n" + line + "\n")
+            self.assertEqual("blocker", found["no hard-coded data"]["severity"], line)
+
+    def test_the_qa_trip_and_days_from_the_page_are_not_flagged(self):
+        for line in ("await itinerary.openTrip();",
+                     "const [day] = await itinerary.dayLabels(); // e.g. 'Day 1'"):
+            self.assertNotIn("no hard-coded data", self.findings(SPEC + "\n" + line + "\n"), line)
+
+    def test_page_contract_example_passes_every_blocker(self):
         contract = Path(__file__).resolve().parents[1] / "skills/page-contracts/tripbuilder-tsp.md"
         example = contract.read_text(encoding="utf8").split("```ts", 1)[1].split("```", 1)[0]
-        self.assertNotIn("no hard-coded dates", self.findings(example))
+        blockers = [r for r, f in self.findings(example).items() if f["severity"] == "blocker"]
+        self.assertEqual(blockers, [])
+
+    def test_page_rules_name_no_trip_service_or_selector(self):
+        contract = Path(__file__).resolve().parents[1] / "skills/page-contracts/tripbuilder-tsp.md"
+        text = contract.read_text(encoding="utf8")
+        for fixed in ("Bangkok", "Lyon", "Waldorf", "data-test", ".itin__", "getByRole("):
+            self.assertNotIn(fixed, text)
+
+
+class ExploreKeywordsTest(unittest.TestCase):
+    def test_quoted_ui_text_comes_first_then_significant_words(self):
+        state = {"summary": "[TSP] Info services - frontend",
+                 "description": "Each day card has an 'Add Service' button. Tabs read 'Details', 'Travellers'. "
+                                "Date value='2026-12-03'.",
+                 "test_cases": [{"summary": "Info row shows 'Info only' badge",
+                                 "steps": [{"action": "Open the 'Travellers' tab", "expected_result": "No <p> tag"}]}]}
+        words = explore_keywords(state)
+        self.assertEqual(words[:4], ["add service", "details", "travellers", "info only"])
+        self.assertIn("info", words)
+        self.assertIn("frontend", words)
+        self.assertNotIn("the", words)
+        self.assertNotIn("open", words)
+        self.assertNotIn("2026-12-03", words)
+
+
+@unittest.skipUnless(shutil.which("node"), "node is not on PATH")
+class ExplorerRankingTest(unittest.TestCase):
+    TREE = "\n".join([
+        '- main:',
+        '  - button "Add service"',
+        '  - button "Day 1 Sat, Nov 28, 2026"',
+        '  - button "Day 2 Sun, Nov 29, 2026"',
+        '  - button "Sunset drinks Info"',
+        '  - button "Remove Sunset drinks"',
+        '  - button "Save changes"',
+        '  - tab "Travellers"',
+        '  - button "Add service"',
+        '  - button "Help" [disabled]',
+        '  - row "Ref Trip name Status"',
+        "  - 'row \"TR-1 Lyon: Vieux Lyon''s Traboules Dec 18, 2026\"':"])
+
+    def test_yaml_quoted_rows_are_parsed(self):
+        rows = [c["name"] for c in self.run_js("x.controls(tree)") if c["role"] == "row"]
+        self.assertEqual(rows[1], "TR-1 Lyon: Vieux Lyon's Traboules Dec 18, 2026")
+
+    def run_js(self, expr):
+        script = Path(__file__).resolve().parents[1] / "taf/steps/ui_explorer.cjs"
+        code = (f"const x = require({json.dumps(str(script))});"
+                f"const tree = {json.dumps(self.TREE)};"
+                f"process.stdout.write(JSON.stringify({expr}));")
+        return json.loads(subprocess.run(["node", "-e", code], capture_output=True, text=True, check=True).stdout)
+
+    def test_keyword_controls_rank_first_and_dates_collapse_to_one_template(self):
+        ranked = self.run_js("x.rank(x.controls(tree), ['info', 'travellers'], 10)")
+        names = [c["name"] for c in ranked]
+        self.assertEqual(sorted(names[:2]), ["Sunset drinks Info", "Travellers"])
+        self.assertEqual(sum(n.startswith("Day ") for n in names), 1, "Day 1 and Day 2 are one template")
+        self.assertEqual(names.count("Add service"), 1)
+
+    def test_destructive_submit_and_disabled_controls_are_never_clicked(self):
+        names = [c["name"] for c in self.run_js("x.rank(x.controls(tree), [], 20)")]
+        for never in ("Remove Sunset drinks", "Save changes", "Help"):
+            self.assertNotIn(never, names)
+
+    def test_add_opens_a_flow_on_the_page_but_submits_inside_a_dialog(self):
+        on_page = [c["name"] for c in self.run_js("x.rank(x.controls(tree), [], 20)")]
+        in_dialog = [c["name"] for c in self.run_js("x.rank(x.controls(tree), [], 20, 0, true)")]
+        self.assertIn("Add service", on_page)
+        self.assertNotIn("Add service", in_dialog)
+
+    def test_same_named_controls_keep_their_index(self):
+        adds = [c for c in self.run_js("x.controls(tree)") if c["name"] == "Add service"]
+        self.assertEqual([c["nth"] for c in adds], [0, 1])
 
 
 if __name__ == "__main__":
