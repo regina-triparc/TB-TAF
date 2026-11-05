@@ -278,6 +278,17 @@ class RepoScanTest(unittest.TestCase):
         text = render_repo_context(facts, 10_000)
         self.assertLess(text.index("Verified page objects"), text.index("### Page objects"))
 
+    def test_a_default_value_with_a_call_keeps_the_method_listed(self):
+        root = Path(tempfile.mkdtemp())
+        (root / "e2e" / "qa").mkdir(parents=True)
+        (root / "e2e" / "pages").mkdir(parents=True)
+        (root / "e2e" / "pages" / "trip.page.ts").write_text(
+            "export class TripPage {\n  constructor(private readonly page: Page) {}\n"
+            "  async openTrip(tripName: string | RegExp | undefined = qaTripName()): Promise<void> {\n  }\n"
+            "  async dayLabels(): Promise<string[]> {\n  }\n}\n")
+        methods = scan_repository(root, "e2e/qa")["page_objects"][0]["methods"]
+        self.assertTrue(any(m.startswith("openTrip(") for m in methods), methods)
+
 
 class SpecRulesTest(unittest.TestCase):
     def findings(self, code):
@@ -321,6 +332,27 @@ class SpecRulesTest(unittest.TestCase):
                      "const form = await itinerary.openAddInfo('Day 3');"):
             found = self.findings(SPEC + "\n" + line + "\n")
             self.assertEqual("blocker", found["no hard-coded data"]["severity"], line)
+
+    def test_trip_level_checks_on_the_shared_trip_are_a_blocker(self):
+        code = SPEC.replace("async ({ page }) => { await expect(page).toHaveURL(/.+/); });\n  test('[TC-002]",
+                            "async () => { const before = await itinerary.priceAndCommission(); });\n  test('[TC-002]", 1)
+        self.assertIn("TC-001", self.findings(code)["trip-level checks need their own trip"]["detail"])
+        fixme = code.replace("async () => { const before", "async () => { test.fixme(true, 'needs a trip'); // const before")
+        self.assertNotIn("trip-level checks need their own trip", self.findings(fixme))
+        conditional = code.replace("async () => { const before",
+                                   "async () => { if (!day) { test.fixme(true, 'no day'); } const before")
+        self.assertIn("trip-level checks need their own trip", self.findings(conditional))
+
+    def test_assumed_urls_and_anchored_text_are_blockers(self):
+        for line, rule in (("await expect(page).toHaveURL(/\\/tsp\\/[^/]+\\/itinerary/);", "no assumed URLs"),
+                           ("await expect(page).toHaveURL('/trips');", "no assumed URLs"),
+                           ("await expect(sheet.tabs).toHaveText(['Details', /^Travellers/]);", "trimmed text")):
+            self.assertEqual("blocker", self.findings(SPEC + "\n" + line + "\n")[rule]["severity"], line)
+        for line in ("const url = page.url(); await expect(page).toHaveURL(url);",
+                     "await expect(sheet.tabs).toHaveText(['Details', 'Travellers']);"):
+            found = self.findings(SPEC + "\n" + line + "\n")
+            self.assertNotIn("no assumed URLs", found, line)
+            self.assertNotIn("trimmed text", found, line)
 
     def test_the_qa_trip_and_days_from_the_page_are_not_flagged(self):
         for line in ("await itinerary.openTrip();",

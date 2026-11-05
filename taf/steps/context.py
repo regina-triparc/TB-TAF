@@ -24,7 +24,8 @@ from taf.llm.router import ROUTER
 
 _SKIP_DIRS = {"node_modules", ".git", "test-results", "playwright-report", "test-artifacts", "blob-report", ".auth"}
 _CLASS_RE = re.compile(r"export\s+(?:default\s+)?class\s+(\w+)")
-_METHOD_RE = re.compile(r"^\s+(?:public\s+)?(?:async\s+)?(?:(get)\s+)?(\w+)\s*\(([^)]*)\)\s*(?::\s*([^{]+?))?\s*\{",
+# Parameters may hold one level of parentheses: a default such as `name = qaTripName()`.
+_METHOD_RE = re.compile(r"^\s+(?:public\s+)?(?:async\s+)?(?:(get)\s+)?(\w+)\s*\(((?:[^()]|\([^()]*\))*)\)\s*(?::\s*([^{]+?))?\s*\{",
                         re.MULTILINE)
 _READONLY_RE = re.compile(r"^\s+(?:public\s+)?readonly\s+(\w+)\s*:", re.MULTILINE)
 # A page object whose header comment says it was checked against the live app: that

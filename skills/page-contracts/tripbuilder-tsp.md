@@ -40,7 +40,9 @@ traveller names, its dates, prices and counts are sample data that show the stru
    values, created in setup and deleted after. There is no trip-creation helper yet:
    write such a test as `test.fixme(true, 'needs a trip-creation setup helper (party,
    rooms, dates)')` with its setup and checks as comments. Never build a trip with raw
-   locators, and never assert those values on the QA trip.
+   locators, and never assert those values on the QA trip - not even "unchanged before and
+   after": the QA trip may have no price at all. The review rejects a test that reads
+   price, commission or status without `test.fixme`.
 7. **Dates come from the page.** Expect the date the page object reads for the day you
    used (`dayDate(day)`, `dayIsoDate(day)`); never a literal.
 8. **Values from the ticket are requirements, not fixtures.** Exact copy the acceptance
@@ -63,6 +65,18 @@ traveller names, its dates, prices and counts are sample data that show the stru
    the UI update, without reloading the page unless the case is about a reload.
 6. Prefer the page objects' open/submit helpers over clicking through dialogs yourself;
    they wait for the right moment.
+7. **Never assume a URL.** Routes change with the UI. To prove "no reload", keep
+   `const url = page.url()` from before the action and expect `toHaveURL(url)` after; never
+   expect a literal path. To check where a click leads, assert on what the page shows.
+8. **Rendered text is not clean text.** It carries whitespace around it (`" Travellers "`),
+   and on cards the icon names run straight into the labels (`info_outline<title>Info
+   delete_outline`). Assert with plain strings - `toHaveText` / `toContainText` trim and
+   collapse whitespace for strings - and never with `^`, `$` or `\b` on rendered text. For
+   what a card says about itself (its type, its status), use the page object or the details
+   panel, not the card's inner text.
+9. **Rich text is saved with `&nbsp;`.** The description editor stores typed spaces as
+   `&nbsp;` (`<p>QA&nbsp;bold&nbsp;part.</p>`). Before comparing saved HTML or a request
+   body, normalise: `html.replace(/&nbsp;| /g, ' ')`. Compare tags and text, not bytes.
 
 ## Keep it minimal
 
