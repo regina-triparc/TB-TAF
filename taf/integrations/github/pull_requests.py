@@ -31,6 +31,11 @@ _PR_URL_RE = re.compile(r"github\.com/([\w.-]+/[\w.-]+)/pull/(\d+)", re.IGNORECA
 _PR_REF_RE = re.compile(r"\b([\w.-]+/[\w.-]+)#(\d+)\b")
 _FILE_HEADER_RE = re.compile(r"^diff --git a/(.+?) b/(.+)$", re.MULTILINE)
 
+# Repositories that moved: old "owner/name" (lowercase) -> where the code lives now. Jira's
+# development panel and older tickets still link the old repo; a PR that names it, by its
+# repo or by its URL, is rewritten so its diff is fetched from the new one.
+MOVED_REPOS = {"traveledge/triparc.tripbuilder": "TripArc-Platform/TripArc.TripBuilder"}
+
 
 @dataclass(frozen=True)
 class PullRequest:
@@ -39,6 +44,13 @@ class PullRequest:
     status: str = ""     # MERGED | OPEN | DECLINED | "" when unknown
     url: str = ""
     title: str = ""      # from Jira's development panel, when known (classification signal)
+
+    def __post_init__(self) -> None:
+        in_url = _PR_URL_RE.search(self.url or "")
+        moved = MOVED_REPOS.get((self.repo or "").lower()) or (in_url and MOVED_REPOS.get(in_url.group(1).lower()))
+        if moved:
+            object.__setattr__(self, "repo", moved.lower())
+            object.__setattr__(self, "url", f"https://github.com/{moved}/pull/{self.number}")
 
     @property
     def usable(self) -> bool:
@@ -122,7 +134,13 @@ class SourceRepo:
 
 
 def source_repo() -> SourceRepo:
-    return SourceRepo(SETTINGS.source_repo_url, SETTINGS.source_repo_local_path, SETTINGS.source_base_branch)
+    """The configured source repo; an .env that still names a moved repo gets its new home."""
+    url = SETTINGS.source_repo_url
+    moved = MOVED_REPOS.get(repo_slug(url))
+    if moved:
+        log.info("SOURCE_REPO_URL names a moved repo; using https://github.com/%s.git", moved)
+        url = f"https://github.com/{moved}.git"
+    return SourceRepo(url, SETTINGS.source_repo_local_path, SETTINGS.source_base_branch)
 
 
 def fetch_ticket_diff(prs: List[PullRequest]) -> Tuple[str, List[str]]:
