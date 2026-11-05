@@ -14,7 +14,8 @@ from taf.config import SETTINGS
 from taf.integrations.github.pull_requests import diff_for_prompt
 from taf.integrations.jira.xray import build_xray_csv, build_xray_tests_json
 from taf.llm.router import ROUTER
-from taf.skills import skills_prompt
+from taf.skills import skills_prompt, skills_used
+from taf.steps.clarify import clarifications_block
 
 SYSTEM_PROMPT = load_prompt(__file__, "prompt.md")
 
@@ -39,7 +40,7 @@ Target URL: {state.get('target_url', '')}
 ## Diff (abridged)
 ```diff
 {diff_for_prompt(state, 1 / 3, provider)}
-```"""
+```{clarifications_block(state)}"""
 
 
 def render_test_plan_markdown(plan: TestPlan) -> str:
@@ -66,7 +67,7 @@ def test_architect(state: QAState) -> Dict[str, Any]:
     system = SYSTEM_PROMPT
     if route.provider == "ollama":
         system += LOCAL_LIMIT.format(max_cases=SETTINGS.ollama_max_test_cases)
-    system += skills_prompt("architect", route.provider)
+    system += skills_prompt("architect", route.provider, state)
     plan = ROUTER.structured(
         state, route,
         [SystemMessage(content=system), ROUTER.context_message(route, build_prompt(state, route.provider))],
@@ -78,4 +79,5 @@ def test_architect(state: QAState) -> Dict[str, Any]:
         "test_cases": [case.model_dump() for case in plan.test_cases],
         "xray_csv_content": build_xray_csv(plan, state["ticket_id"]),
         "xray_tests_json": build_xray_tests_json(plan, state["ticket_id"]),
+        "skills_used": skills_used(state, "architect", route.provider),
     }

@@ -127,6 +127,7 @@ One run of **Full run** (dashboard) or `python -m taf run TB-601 --stage full`:
 | 0 | **Ticket.** Summary, description and linked PRs come from the ticket source: the seed file (demo) or the Jira API (real). | `taf/integrations/jira/board.py` | Jira REST + development panel (real flow only) |
 | 0 | **PR diff.** The linked PRs are fetched with git into a small bare clone, then condensed per agent: every file listed, frontend templates shown first. | `taf/integrations/github/pull_requests.py` | GitHub via git: `TravelEdge/TripArc.TripBuilder` (read) |
 | 1 | **Triage:** acceptance criteria, impacted areas, risks, open questions. | `taf/agents/triage/` | the model (via the LLM router) |
+| 1b | **Clarify gate** (opt-in, `CLARIFY_GATE=true`): an unclear ticket - a blocking question (no acceptance criteria in the ticket, no PR diff, no target URL, a route the page contract does not know, or one triage marked blocking), or triage confidence below `CLARIFY_THRESHOLD` - pauses before anything is designed. Answer on the dashboard or with `taf resume --answers`; proceed (the questions become risks) or reject. Off: the questions are listed in the report. | `taf/steps/clarify.py` | none |
 | 2 | **Test Architect:** risk-based test plan, as Xray test cases (JSON + CSV). | `taf/agents/architect/` | the model |
 | 3 | **Repository context:** the test repo's own conventions - Playwright projects, page objects, fixtures, helpers, an example spec - read from its base branch. | `taf/steps/context.py` | GitHub via git: `tripbuilder-e2e` (fetch) |
 | 4 | **Automation Engineer:** writes the Playwright spec (text only). | `taf/agents/automation/` | the model |
@@ -345,6 +346,8 @@ Run from the project root with the virtualenv active.
 | `python -m taf run ABC-1 --summary "..." --description "..."` | A ticket that is in neither Jira nor the seed file. |
 | `python -m taf resume <run_id> --approve [--by NAME]` | Approves a run waiting at the approval gate: it publishes, then reports. `--reject --note "..."` publishes nothing. |
 | `python -m taf resume <run_id>` | Continues a crashed or cancelled run from its last completed step. |
+| `python -m taf resume <run_id> --answers answers.json` | Continues a run paused at the clarify gate with the team's answers (`{"Q1": "..."}`). `--proceed` continues without them (recorded as risks), `--reject` stops and writes the report. |
+| `python -m taf review <branch> [--base main] [--run] [--llm]` | Read-only review of the specs a test-repo branch changes, hand-written ones included: the same static checks and review rules as generated specs, each finding at its line and marked new or pre-existing; tsc / ESLint / `--run` when the branch is checked out with a clean tree. Writes a Markdown report to `reports/`; never commits, pushes or approves. |
 | `python -m taf xray export TB-601 [--apply]` | Exports the ticket's reviewed Xray test cases from the test repo (dry run without `--apply`). |
 | `python -m taf skills` | Lists skills and the agents they apply to. |
 | `python -m taf eval --provider ollama [--with-repo] [--judge] [--langfuse]` | Scores agent output against `evals/cases`. |
@@ -487,7 +490,7 @@ models think adaptively, and thinking depth is controlled with `effort`.
 ### LangGraph pipeline
 
 ```
-gather_context → intake_triager → test_architect → repo_context → ui_snapshot → generate_spec ◀──┐
+gather_context → intake_triager → clarify_gate → test_architect → repo_context → ui_snapshot → generate_spec ◀──┐
                                                                        │                  │ fixable failure /
                                                                  validate_spec ───────────┤ review blocker,
                                                                        │ ok               │ attempts left

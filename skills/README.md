@@ -21,13 +21,40 @@ agents: automation            # comma list: triage, architect, automation
 The body. Write it as instructions to the agent: short, concrete, with code.
 ```
 
+### Optional: load a skill only when the run needs it
+
+New skills can say when they apply. A skill without these fields always applies to
+its agents (all the original skills), so nothing changes for them.
+
+```markdown
+---
+name: api-contract-testing
+description: Schemas from the documented contract, a test per status code.
+agents: automation
+layers: api                 # api, ui - the run's layer must be one of them
+actions: create, update     # create, update, regression - the run's action must match
+triggers: src/**/Controllers/*.cs, negative   # diff path globs or test-case categories
+priority: 10                # higher loads first when SKILLS_MAX_CHARS is tight (default 0)
+---
+```
+
+Long material goes in `<skill>/references/*.md`, kept out of the prompt unless its own
+`triggers:` front matter matches the diff or the plan (a reference without triggers is
+never loaded automatically). References are never loaded on Ollama routes.
+
+Until tickets are classified, every run is layer `ui`, action `create`.
+
+Nothing is dropped silently: each agent's loaded and skipped skills, with the reason,
+are recorded in the run (`skills_used`) and shown on the dashboard, in the report and
+on the agent's Langfuse span.
+
 ## What is loaded, and when
 
 | Setting | Default | Effect |
 |---|---|---|
 | `SKILLS_ENABLED` | `true` | Master switch. |
 | `SKILLS_ON_LOCAL` | `false` | Also apply skills on Ollama routes. Off by default: a 4–8k context fills fast. |
-| `SKILLS_MAX_CHARS` | `12000` | Total characters appended per agent. Skills load in folder-name order until the cap. |
+| `SKILLS_MAX_CHARS` | `12000` | Total characters appended per agent. Skills load by priority, then folder name; one that does not fit is skipped and recorded. |
 | `SKILLS_DIR` | `skills` | Folder to load from, relative to the project root. |
 
 Skills never apply to the `offline` provider.

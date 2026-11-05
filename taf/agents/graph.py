@@ -1,8 +1,11 @@
 """
 The LangGraph workflow for one ticket. Agents (LLM) and deterministic steps:
 
-    gather_context ─▶ intake_triager ─▶ test_architect ─▶ repo_context ─▶ ui_snapshot ─▶ generate_spec ◀──────┐
-         (git)            (LLM)             (LLM)          (git, read)   (live app, read)     (LLM)            │
+    gather_context ─▶ intake_triager ─▶ clarify_gate   (pauses when the ticket is unclear; opt-in)
+         (git)            (LLM)               │
+                                              ▼
+                                        test_architect ─▶ repo_context ─▶ ui_snapshot ─▶ generate_spec ◀──────┐
+                                            (LLM)          (git, read)   (live app, read)     (LLM)            │
                                                                                                  │             │ repair while
                                                                                                  ▼             │ attempts remain
                                                                                            validate_spec ──────┤ (retryable failure,
@@ -16,7 +19,10 @@ The LangGraph workflow for one ticket. Agents (LLM) and deterministic steps:
                                                               publish ─▶ report_synthesizer ─▶ closeout
 
 * An aborted agent (budget, unrecoverable LLM error), a validation failure that
-  cannot be retried, or a rejection jumps to the report - a run always explains itself.
+  cannot be retried, or a rejection (at the clarify or the approval gate) jumps to the
+  report - a run always explains itself.
+* clarify_gate pauses only when CLARIFY_GATE is on and the ticket is unclear
+  (taf/steps/clarify.py); otherwise it records the questions and passes through.
 * `stop_after` ends a partial run (the dashboard's triage / architect / automation
   stages); "report" stops before the n8n closeout.
 * Every step is checkpointed (thread id = run id), so a crashed or paused run resumes
@@ -37,6 +43,7 @@ from taf.agents.reporter import report_synthesizer
 from taf.agents.state import QAState
 from taf.agents.triage import intake_triager
 from taf.config import SETTINGS, project_path
+from taf.steps.clarify import clarify_gate
 from taf.steps.context import gather_context, repo_context
 from taf.steps.publish import approval_gate, has_output, publish
 from taf.steps.review import review_spec
@@ -48,6 +55,7 @@ from taf.steps.validation import run_tests, validate_spec
 NODE_PHASE: Dict[str, str] = {
     "gather_context": "context",
     "intake_triager": "triage",
+    "clarify_gate": "triage",  # a pause here shows as triage "waiting"; the phase list is unchanged
     "test_architect": "architect",
     "repo_context": "automation",
     "ui_snapshot": "automation",
@@ -77,6 +85,12 @@ def _after_agent(stage: str, next_node: str) -> Callable[[QAState], str]:
         return END if state.get("stop_after") == stage else next_node
 
     return route
+
+
+def _after_clarify(state: QAState) -> str:
+    if state.get("aborted") or (state.get("clarify") or {}).get("status") == "rejected":
+        return _finish(state)
+    return "test_architect"
 
 
 def _after_generate(state: QAState) -> str:
@@ -117,6 +131,7 @@ def _after_report(state: QAState) -> str:
 def build_graph(checkpointer: Any = None):
     graph = StateGraph(QAState)
     for name, fn in (("gather_context", gather_context), ("intake_triager", intake_triager),
+                     ("clarify_gate", clarify_gate),
                      ("test_architect", test_architect), ("repo_context", repo_context),
                      ("ui_snapshot", ui_snapshot), ("generate_spec", generate_spec),
                      ("validate_spec", validate_spec), ("run_tests", run_tests),
@@ -127,8 +142,9 @@ def build_graph(checkpointer: Any = None):
 
     graph.add_edge(START, "gather_context")
     graph.add_edge("gather_context", "intake_triager")
-    graph.add_conditional_edges("intake_triager", _after_agent("triage", "test_architect"),
-                                ["test_architect", REPORT, END])
+    graph.add_conditional_edges("intake_triager", _after_agent("triage", "clarify_gate"),
+                                ["clarify_gate", REPORT, END])
+    graph.add_conditional_edges("clarify_gate", _after_clarify, ["test_architect", REPORT, END])
     graph.add_conditional_edges("test_architect", _after_agent("architect", "repo_context"),
                                 ["repo_context", REPORT, END])
     graph.add_edge("repo_context", "ui_snapshot")

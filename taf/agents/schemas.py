@@ -6,6 +6,14 @@ from typing import List, Literal
 from pydantic import BaseModel, Field
 
 
+class Question(BaseModel):
+    """A question for the team. Blocking ones can pause the run at the clarify gate."""
+
+    text: str = Field(description="The question, specific enough that one person can answer it.")
+    blocking: bool = Field(default=False, description="True when tests designed without the answer would be guesses.")
+    criterion_ref: str = Field(default="", description="The acceptance criterion it concerns (e.g. AC-2), if any.")
+
+
 class TriageAnalysis(BaseModel):
     """Output of Agent 1 - the Intake Triager."""
 
@@ -19,6 +27,13 @@ class TriageAnalysis(BaseModel):
     )
     gaps_and_questions: List[str] = Field(
         default_factory=list, description="Ambiguities in the ticket that QA should flag to the team."
+    )
+    questions: List[Question] = Field(
+        default_factory=list, description="The open questions, each marked blocking or not."
+    )
+    confidence: float = Field(
+        default=1.0, ge=0.0, le=1.0,
+        description="0-1: how sure you are that the criteria above are what the ticket means.",
     )
 
 

@@ -49,6 +49,10 @@ class QAState(TypedDict, total=False):
     validation: Dict[str, Any]          # deterministic checks: {"ok", "retryable", "checks": [...]}
     review: Dict[str, Any]              # {"findings": [...], "blocking": bool, "llm": {...}}
     approval: Dict[str, Any]            # {"status": approved|rejected|not_required|skipped, "by", "note"}
+    clarify: Dict[str, Any]             # clarify gate: {"status": passed|not_required|answered|proceeded|rejected,
+                                        #  "questions": [...], "confidence", "risks", "by", "note"}
+    clarifications: List[Dict[str, Any]]  # answers from the team: [{"id", "question", "answer"}]
+    skills_used: Dict[str, Any]         # per agent: {"loaded": [...], "skipped": [{"name", "reason"}], "references"}
     publish: Dict[str, Any]             # {"branch", "commit_sha", "pushed", "pr_url", "pr_number", ...}
     trace_url: str                      # Langfuse trace, when tracing is on
 

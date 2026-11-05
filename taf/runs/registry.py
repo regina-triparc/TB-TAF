@@ -64,10 +64,14 @@ def execute_qa_run(initial_state: QAState) -> None:
         with TRACER.run(initial_state, extra_tags=["n8n"]):
             final: QAState = qa_graph().invoke(initial_state, config=thread_config(run_id))
         if final.get("__interrupt__"):
-            # Paused at the approval gate; `python -m taf resume <run_id> --approve` (or the
-            # dashboard) continues it, and the closeout then calls n8n back.
-            RUNS.update(run_id, status="waiting_approval", git_branch="", errors=final.get("errors", []))
-            CONTROL_ROOM.emit(run_id, ticket_id, "run.waiting", reason="approval required")
+            # Paused at the approval (or clarify) gate; `python -m taf resume <run_id> ...` (or
+            # the dashboard) continues it, and the closeout then calls n8n back.
+            asking = any(getattr(i, "value", None) and isinstance(i.value, dict)
+                         and i.value.get("kind") == "clarification" for i in final["__interrupt__"])
+            RUNS.update(run_id, status="needs_clarification" if asking else "waiting_approval", git_branch="",
+                        errors=final.get("errors", []))
+            CONTROL_ROOM.emit(run_id, ticket_id, "run.waiting",
+                              reason="answers required" if asking else "approval required")
             run_state = "waiting"
             return
         outcome = "QA Passed" if final.get("execution_passed") else "QA Failed"

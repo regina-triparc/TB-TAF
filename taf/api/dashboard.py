@@ -51,6 +51,13 @@ class DecisionRequest(BaseModel):
     note: str = Field("", max_length=500)
 
 
+class ClarifyRequest(BaseModel):
+    action: str = Field(..., pattern="^(answer|proceed|reject)$")
+    answers: Dict[str, str] = Field(default_factory=dict)
+    by: str = Field("dashboard", max_length=100)
+    note: str = Field("", max_length=500)
+
+
 # --------------------------------------------------------------------- API --
 @router.get("/api/board")
 def board() -> JSONResponse:
@@ -135,6 +142,25 @@ def decide(run_id: str, req: DecisionRequest) -> Dict[str, Any]:
     except stages.StageError as exc:
         raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
     return {"run_id": run_id, "approved": req.approved, "state": "running"}
+
+
+@router.post("/api/clarify/{run_id}")
+def clarify(run_id: str, req: ClarifyRequest) -> Dict[str, Any]:
+    """Answer the questions of a run paused at the clarify gate (or proceed / reject); it continues in the background."""
+    try:
+        stages.resume_in_background(run_id, req.model_dump())
+    except stages.StageError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+    return {"run_id": run_id, "action": req.action, "state": "running"}
+
+
+@router.get("/api/questions/{run_id}")
+def questions(run_id: str) -> Dict[str, Any]:
+    """The questions a run paused at the clarify gate is waiting on."""
+    request = stages.pending_clarification(run_id)
+    if request is None:
+        raise HTTPException(status_code=404, detail="That run is not waiting for answers")
+    return request
 
 
 @router.post("/api/resume/{run_id}")

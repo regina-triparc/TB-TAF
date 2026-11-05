@@ -36,6 +36,11 @@ def span_summary(update: Dict[str, Any]) -> Dict[str, Any]:
     for key, value in update.items():
         if key == "errors":
             out["errors"] = [redact(str(e))[:300] for e in value]
+        elif key == "skills_used" and isinstance(value, dict):
+            # Which skills reached the prompt and which were left out, and why.
+            out["skills_used"] = {agent: {"loaded": r.get("loaded", []), "references": r.get("references", []),
+                                          "skipped": [f"{s['name']}: {s['reason']}" for s in r.get("skipped", [])]}
+                                  for agent, r in value.items() if isinstance(r, dict)}
         elif isinstance(value, (bool, int, float)) or value is None:
             out[key] = value
         elif isinstance(value, str):

@@ -43,6 +43,18 @@ def env_int(name: str, default: int) -> int:
         return default
 
 
+def env_float(name: str, default: float) -> float:
+    """Read a float env var, falling back to `default` on missing/invalid values."""
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        logging.getLogger("qa.config").warning("Invalid number for %s=%r, using %s", name, raw, default)
+        return default
+
+
 def env_bool(name: str, default: bool) -> bool:
     """Read a boolean env var ("1", "true", "yes", "on" are truthy)."""
     raw = os.getenv(name, "").strip().lower()
@@ -154,6 +166,11 @@ class Settings:
     qa_checkpoint_db_path: str = field(default_factory=lambda: env_str("QA_CHECKPOINT_DB_PATH", "qa_checkpoints.db"))
     # Pause before anything leaves the machine (push / pull request) until a person approves.
     require_approval: bool = field(default_factory=lambda: env_bool("REQUIRE_APPROVAL", True))
+    # Pause after triage when the ticket is unclear (taf/steps/clarify.py): a blocking
+    # question, or triage confidence below CLARIFY_THRESHOLD. Off by default: the
+    # questions are still computed and listed in the report, the run just does not stop.
+    clarify_gate: bool = field(default_factory=lambda: env_bool("CLARIFY_GATE", False))
+    clarify_threshold: float = field(default_factory=lambda: env_float("CLARIFY_THRESHOLD", 0.7))
     # Open a pull request in the test repository after an approved push. Needs GITHUB_TOKEN
     # (pull requests: read and write) or a signed-in GitHub CLI (gh).
     pr_create_enabled: bool = field(default_factory=lambda: env_bool("PR_CREATE_ENABLED", False))

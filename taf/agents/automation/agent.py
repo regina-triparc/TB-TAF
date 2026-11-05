@@ -27,7 +27,8 @@ from taf.core.text import extract_code_block, message_text, truncate_middle
 from taf.integrations.github.pull_requests import diff_for_prompt
 from taf.integrations.paperclip.control_room import CONTROL_ROOM
 from taf.llm.router import ROUTER, AgentRoute, LLMOutputError
-from taf.skills import skills_prompt
+from taf.skills import skills_prompt, skills_used
+from taf.steps.clarify import clarifications_block
 
 log = logging.getLogger("qa.automation")
 
@@ -122,8 +123,8 @@ Spec file: {SETTINGS.test_spec_dir.strip('/')}/{state['ticket_id']}.spec.ts
 ## Diff (for selectors, routes and copy text)
 ```diff
 {diff_for_prompt(state, 1 / 2, route.provider)}
-```{repo_conventions_block(state)}{live_snapshot_block(state)}{page_contract_block()}"""
-    system = SYSTEM_PROMPT + skills_prompt("automation", route.provider)
+```{clarifications_block(state)}{repo_conventions_block(state)}{live_snapshot_block(state)}{page_contract_block()}"""
+    system = SYSTEM_PROMPT + skills_prompt("automation", route.provider, state)
     return [SystemMessage(content=system), ROUTER.context_message(route, prompt)]
 
 
@@ -167,6 +168,7 @@ def generate_spec(state: QAState) -> Dict[str, Any]:
         "generated_typescript_code": code or "",
         # Feedback is consumed: validation sets it again if this attempt fails too.
         "spec_feedback": problem or "",
+        "skills_used": skills_used(state, "automation", route.provider),
     }
     if route.provider == "offline":
         update["execution_logs"] = OFFLINE_LOG + (f"\n[error] {problem}" if problem else "")
