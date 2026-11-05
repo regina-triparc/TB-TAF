@@ -1,6 +1,7 @@
 """
 Repair from the run: failing tests go back to the Automation Engineer with what
-Playwright saw when they failed, and the corrected spec is run again.
+Playwright saw when they failed, and the corrected spec is run again. Tests skipped on
+an environment variable the test repository does not define go back too (env_guards).
 
 Static validation only proves a spec loads. Most generated tests that fail do so
 because a guess about the page was wrong (a "6:30 PM" option in a 24-hour picker,
@@ -33,24 +34,15 @@ from taf.integrations.github.repository import REPO_LOCK, TEST_REPO, CommandErro
 from taf.integrations.jira import xray
 from taf.llm.router import ROUTER
 from taf.steps.context import append_log
-from taf.steps.playwright_results import TestResult, counts, failure_context, parse_json_report, report_path
+from taf.steps.env_guards import declared_env, env_guards
+from taf.steps.playwright_results import (TEST_START_RE, TestResult, counts, failure_context, parse_json_report,
+                                         report_path, run_passed, test_bodies)
 from taf.steps.validation import code_checks, repo_checks
 
-_TEST_START_RE = re.compile(r"^\s*test(?:\.(?:fixme|skip|fail|only))?\(\s*(['\"`])[^\n]*?\[(TC-\d+)\]", re.MULTILINE)
 _EXPECT_RE = re.compile(r"\bexpect(?:\.soft|\.poll)?\s*\(")
 _QUARANTINE_RE = re.compile(r"\btest\.(fixme|skip)\s*\(")
 
 FAILURES_MAX_CHARS = 24_000
-
-
-def test_bodies(code: str) -> Dict[str, str]:
-    """Each `[TC-xxx]` test's source, from its `test(` line to the next test (or the end)."""
-    starts = [(m.start(), m.group(2)) for m in _TEST_START_RE.finditer(code)]
-    bodies: Dict[str, str] = {}
-    for i, (start, tc) in enumerate(starts):
-        end = starts[i + 1][0] if i + 1 < len(starts) else len(code)
-        bodies[tc] = code[start:end]
-    return bodies
 
 
 def _quarantined(body: str) -> bool:
@@ -89,7 +81,7 @@ def changed(before: str, after: str) -> List[str]:
 def test_lines(code: str, tcs: List[str]) -> List[int]:
     """1-based line of each listed test's `test(` call - Playwright's `<spec>:<line>` filter."""
     wanted, lines = set(tcs), []
-    for match in _TEST_START_RE.finditer(code):
+    for match in TEST_START_RE.finditer(code):
         if match.group(2) in wanted:
             start = match.start() + match.group(0).index("test")
             lines.append(code.count("\n", 0, start) + 1)
@@ -140,6 +132,25 @@ def merge(tests: List[TestResult], rerun: List[TestResult]) -> List[TestResult]:
     return [by_tc.get(t["tc"], t) for t in tests]
 
 
+def to_repair(tests: List[TestResult], code: str, declared: set) -> List[TestResult]:
+    """
+    Failed tests, and skipped tests whose skip depends on an undeclared environment
+    variable - those never run anywhere, so they are as broken as a failure. The skip
+    has no Playwright error, so its reason becomes the error the repair turn sees.
+    """
+    guarded = env_guards(code, test_bodies(code), declared)
+    out = [t for t in tests if t["status"] == "failed" and t["tc"]]
+    for t in tests:
+        if t["status"] == "skipped" and t["tc"] in guarded:
+            names = ", ".join(guarded[t["tc"]])
+            out.append({**t, "error": (
+                f"Skipped by a test.skip() on {names}, which the test repository does not define (not in "
+                ".env.example or .env), so this test never runs. Do not gate tests on environment variables "
+                "you made up: take the test data from the page contract and the page objects, or replace "
+                "the body with test.fixme(true, '<what data is missing>').")})
+    return out
+
+
 @agent_node("Run Repair", engine="llm", abort_on_error=False, route_key="automation")
 def repair_from_run(state: QAState) -> Dict[str, Any]:
     playwright = state.get("playwright") or {}
@@ -148,7 +159,8 @@ def repair_from_run(state: QAState) -> Dict[str, Any]:
     if (SETTINGS.run_repair_attempts <= 0 or ROUTER.resolve(state.get("llm_provider")) == "offline"
             or not code or not (state.get("validation") or {}).get("ok") or TEST_REPO.path is None):
         return {}
-    failing = [t for t in tests if t["status"] == "failed" and t["tc"]]
+    declared = declared_env(TEST_REPO.path)
+    failing = to_repair(tests, code, declared)
     if not failing:
         return {}
 
@@ -171,7 +183,10 @@ def repair_from_run(state: QAState) -> Dict[str, Any]:
             problem, results = run_candidate(state, candidate, rerun_tcs, f"repair-{n}", logs)
             status = {t["tc"]: t["status"] for t in results}
             fixed = [t["tc"] for t in failing if status.get(t["tc"]) == "passed"]
-            quarantined = [t["tc"] for t in failing if status.get(t["tc"]) == "skipped"]
+            # Still skipped on an undeclared variable is not a quarantine: only fixme/skip without one is.
+            still_guarded = env_guards(candidate, test_bodies(candidate), declared)
+            quarantined = [t["tc"] for t in failing
+                           if status.get(t["tc"]) == "skipped" and t["tc"] not in still_guarded]
             broke = [tc for tc in rerun_tcs if tc in passing and status.get(tc) != "passed"]
             record.update(rerun=rerun_tcs, fixed=fixed, quarantined=quarantined, broke=broke)
             if problem:
@@ -185,7 +200,7 @@ def repair_from_run(state: QAState) -> Dict[str, Any]:
             else:
                 record["outcome"] = "kept"
                 code, tests = candidate, merge(tests, results)
-                failing = [t for t in tests if t["status"] == "failed" and t["tc"]]
+                failing = to_repair(tests, code, declared)
         attempts.append(record)
         rejection = record.get("reason", "") if record["outcome"] == "rejected" else ""
         logs.append(f"[info] Run repair {n}: {record['outcome']}"
@@ -201,12 +216,15 @@ def repair_from_run(state: QAState) -> Dict[str, Any]:
             TEST_REPO.write_spec(state["ticket_id"], code, logs)
 
     after = counts(tests)
-    passed = bool(tests) and all(t["status"] != "failed" for t in tests)
+    guarded = env_guards(code, test_bodies(code), declared)
+    env_skipped = {t["tc"]: guarded[t["tc"]] for t in tests if t["status"] == "skipped" and t["tc"] in guarded}
+    passed = run_passed(tests) and not env_skipped
     return {
         "generated_typescript_code": code,
         "execution_passed": passed,
         "execution_logs": append_log(state, logs),
-        "playwright": {**playwright, "passed": passed, "counts": after, "tests": tests},
+        "playwright": {**playwright, "passed": passed, "counts": after, "tests": tests,
+                       "env_skipped": env_skipped},
         "run_repair": {"attempts": attempts, "before": before, "after": after,
                        "accepted": any(a["outcome"] == "kept" for a in attempts)},
     }

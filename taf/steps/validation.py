@@ -31,7 +31,8 @@ from taf.integrations.github.repository import REPO_LOCK, TEST_REPO, CommandErro
 from taf.integrations.jira import xray
 from taf.llm.router import ROUTER
 from taf.steps.context import append_log, repo_available
-from taf.steps.playwright_results import counts as test_counts, parse_json_report, report_path
+from taf.steps.env_guards import declared_env, env_guards
+from taf.steps.playwright_results import counts as test_counts, parse_json_report, report_path, test_bodies
 
 Check = Dict[str, Any]
 
@@ -236,8 +237,18 @@ def run_tests(state: QAState) -> Dict[str, Any]:
             logs.append(f"[error] {exc}")
             return {"execution_passed": False, "execution_logs": append_log(state, logs),
                     "errors": [f"Playwright Runner: {exc}"]}
-    log_text = append_log(state, logs)
     tests = parse_json_report(report)
-    return {"execution_passed": passed, "execution_logs": log_text,
-            "playwright": {"passed": passed, "counts": test_counts(tests) or parse_playwright_counts("\n".join(logs)),
-                           "tests": tests}}
+    run_counts = test_counts(tests) or parse_playwright_counts("\n".join(logs))
+    guarded = env_guards(code, test_bodies(code), declared_env(TEST_REPO.path))
+    env_skipped = {t["tc"]: guarded[t["tc"]] for t in tests if t["status"] == "skipped" and t["tc"] in guarded}
+    if passed and not run_counts.get("passed"):
+        # Playwright exits 0 when every test skips; that proves nothing about the ticket.
+        logs.append("[warn] No test passed (all skipped or none ran) - the run does not count as a pass.")
+        passed = False
+    if passed and env_skipped:
+        undefined = sorted({name for names in env_skipped.values() for name in names})
+        logs.append(f"[warn] {len(env_skipped)} test(s) skipped on environment variables the test repository "
+                    f"does not define ({', '.join(undefined)}) - the run does not count as a pass.")
+        passed = False
+    return {"execution_passed": passed, "execution_logs": append_log(state, logs),
+            "playwright": {"passed": passed, "counts": run_counts, "tests": tests, "env_skipped": env_skipped}}

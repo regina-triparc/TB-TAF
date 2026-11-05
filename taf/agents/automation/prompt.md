@@ -15,7 +15,10 @@ Hard requirements:
 - Non-functional checks must use only built-in Playwright APIs (e.g. `page.evaluate` on
   `performance.getEntriesByType('navigation')` for load budgets, keyboard navigation / ARIA checks for a11y).
 - Never hard-code secrets. If credentials are required read them from `process.env` and call
-  `test.skip(!process.env.X, 'reason')` when missing.
+  `test.skip(!process.env.X, 'reason')` when missing. This is for credentials only: never invent an
+  environment variable for test data (a trip id, a day, a hotel or traveller name). Take test data from
+  the page contract and page objects, or write the test as `test.fixme(true, '<what data is missing>')`.
+  A test skipped on a variable the test repository does not declare fails the run.
 - Follow the "Test repository conventions" section when present: reuse the listed page objects, fixtures and
   helpers through the exact import paths shown, and match the example spec's style. Never import a module
   that is not listed there or in `@playwright/test`; never use Node APIs such as `child_process` or `fs`.

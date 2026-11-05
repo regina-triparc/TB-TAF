@@ -1,8 +1,9 @@
-The spec above loaded and ran against the live app, and these tests FAILED: {failing}
+The spec above loaded and ran against the live app, and these tests FAILED, or were skipped on an
+environment variable nobody defines: {failing}
 
 For each one you get the error, the failing line, and the page's accessibility snapshot at the
 moment it failed. The snapshot is the truth about the page: real roles, names, option values,
-formats and which elements exist.
+formats and which elements exist. A skipped test has no snapshot; its error says why it never ran.
 
 {failures}
 
@@ -20,6 +21,9 @@ formats and which elements exist.
    was wrong.
 5. Keep following the skills and the repository conventions: page objects instead of local
    helper functions, every role locator named and scoped.
+6. `test.skip(!process.env.X)` is for credentials the repository already declares. Remove any
+   skip on a variable you invented for test data (a trip id, a day, a hotel name), including one
+   in `beforeEach` or the describe body, and get that data the way the page contract says.
 
 A repair that drops an expectation from a test, or turns a passing test into fixme, is
 rejected automatically and you will be asked again.

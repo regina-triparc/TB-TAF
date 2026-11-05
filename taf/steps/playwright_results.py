@@ -19,6 +19,7 @@ from taf.core.text import truncate_middle
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 _TC_RE = re.compile(r"\[(TC-\d+)\]")
+TEST_START_RE = re.compile(r"^\s*test(?:\.(?:fixme|skip|fail|only))?\(\s*(['\"`])[^\n]*?\[(TC-\d+)\]", re.MULTILINE)
 
 TestResult = Dict[str, Any]
 
@@ -70,6 +71,22 @@ def parse_json_report(path: Path) -> List[TestResult]:
     for suite in report.get("suites") or []:
         _walk(suite, out)
     return out
+
+
+def test_bodies(code: str) -> Dict[str, str]:
+    """Each `[TC-xxx]` test's source, from its `test(` line to the next test (or the end)."""
+    starts = [(m.start(), m.group(2)) for m in TEST_START_RE.finditer(code)]
+    bodies: Dict[str, str] = {}
+    for i, (start, tc) in enumerate(starts):
+        end = starts[i + 1][0] if i + 1 < len(starts) else len(code)
+        bodies[tc] = code[start:end]
+    return bodies
+
+
+def run_passed(tests: List[TestResult]) -> bool:
+    """A run passes when at least one test passed and none failed: all skipped is not a pass."""
+    statuses = {t["status"] for t in tests}
+    return "passed" in statuses and "failed" not in statuses
 
 
 def counts(tests: List[TestResult]) -> Dict[str, int]:
