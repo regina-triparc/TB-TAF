@@ -38,6 +38,7 @@ class PullRequest:
     repo: str            # "owner/name"
     status: str = ""     # MERGED | OPEN | DECLINED | "" when unknown
     url: str = ""
+    title: str = ""      # from Jira's development panel, when known (classification signal)
 
     @property
     def usable(self) -> bool:

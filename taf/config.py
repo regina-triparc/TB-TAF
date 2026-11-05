@@ -171,6 +171,26 @@ class Settings:
     # questions are still computed and listed in the report, the run just does not stop.
     clarify_gate: bool = field(default_factory=lambda: env_bool("CLARIFY_GATE", False))
     clarify_threshold: float = field(default_factory=lambda: env_float("CLARIFY_THRESHOLD", 0.7))
+    # Ticket classification (taf/steps/classify.py): an action (create, update, extend,
+    # regression_only, skip) and a layer (api, ui, both, none), always recorded. Off: every
+    # ticket still takes today's path (a new spec); on: skip goes to the report and
+    # regression_only runs the matching existing specs instead of generating one.
+    route_by_classification: bool = field(default_factory=lambda: env_bool("ROUTE_BY_CLASSIFICATION", False))
+    # Diff paths that make a change an API change (globs, comma-separated).
+    classify_api_globs: str = field(default_factory=lambda: env_str(
+        "CLASSIFY_API_GLOBS", "*Controller.cs,*/Controllers/*,*Dto.cs,*/Dtos/*,*/DTOs/*,*Handler.cs,*/Handlers/*,"
+                              "*Validator.cs,*/Validators/*"))
+    # Diff paths that need no new test: config, CI, docs, the tests themselves.
+    classify_none_globs: str = field(default_factory=lambda: env_str(
+        "CLASSIFY_NONE_GLOBS", "*.md,docs/*,.github/*,*.yml,*.yaml,*.spec.ts,*.test.ts,*/tests/*,*.Tests/*,"
+                               "*Tests.cs,.editorconfig,.gitignore,*.csproj,*.sln,Dockerfile,*.dockerignore"))
+    # Existing-test lookup before the plan (taf/steps/coverage.py) and the plan gate after it.
+    coverage_max_candidates: int = field(default_factory=lambda: env_int("COVERAGE_MAX_CANDIDATES", 8))
+    coverage_match_threshold: float = field(default_factory=lambda: env_float("COVERAGE_MATCH_THRESHOLD", 0.3))
+    # Pause after the plan when its confidence is below PLAN_CONFIDENCE_THRESHOLD, or an update
+    # has no existing test to update. Off by default: the reasons are only reported.
+    plan_gate: bool = field(default_factory=lambda: env_bool("PLAN_GATE", False))
+    plan_confidence_threshold: float = field(default_factory=lambda: env_float("PLAN_CONFIDENCE_THRESHOLD", 0.6))
     # Open a pull request in the test repository after an approved push. Needs GITHUB_TOKEN
     # (pull requests: read and write) or a signed-in GitHub CLI (gh).
     pr_create_enabled: bool = field(default_factory=lambda: env_bool("PR_CREATE_ENABLED", False))

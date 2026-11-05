@@ -35,8 +35,9 @@ DONE = {"passed", "not_required", "answered", "proceeded", "rejected"}
 # What a ticket's own acceptance criteria look like: a heading, a numbered or bulleted
 # list, or Given/When/Then.
 _CRITERIA_RE = re.compile(r"(?im)acceptance criteria|^\s*(?:\d+[.)]|[-*•])\s+\S|^\s*(?:given|when|then)\b")
-# An app route the ticket names: /tsp/itinerary, /trips/:id. Not URLs (https://...) or file paths.
-_ROUTE_RE = re.compile(r"(?<![\w.:/])/[a-z][a-z0-9-]*(?:/[a-z0-9:{}-]+)*(?![\w./])", re.IGNORECASE)
+# An app route the ticket names: /tsp/itinerary, /trips/:id. Not URLs (https://...), file paths or
+# regex flags (/g): a segment has at least two characters.
+_ROUTE_RE = re.compile(r"(?<![\w.:/])/[a-z][a-z0-9-]+(?:/[a-z0-9:{}-]+)*(?![\w./])", re.IGNORECASE)
 
 
 def _q(text: str, blocking: bool, source: str, criterion_ref: str = "") -> Dict[str, Any]:
@@ -77,7 +78,8 @@ def check_questions(state: QAState) -> List[Dict[str, Any]]:
                       True, "check"))
     known = _contract_routes()
     if known is not None:
-        named = routes_in(f"{state.get('summary', '')}\n{description}")
+        # API endpoints are not pages: the page contract does not list them.
+        named = [r for r in routes_in(f"{state.get('summary', '')}\n{description}") if not r.startswith("/api/")]
         unknown = [r for r in named if not any(r == k or r.startswith(k + "/") for k in known)]
         if unknown:
             out.append(_q(f"The ticket names route(s) {', '.join(unknown)} that the page contract does not list. "

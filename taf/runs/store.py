@@ -11,9 +11,10 @@ Phase vocabulary (what the board renders):
     triage -> architect -> automation -> report -> closeout
     (plus approval -> publish between automation and report)
 Phase states: running | waiting | ok | failed | cancelled
-Run states:   running | waiting | needs_clarification | completed | failed | cancelled
+Run states:   running | waiting | needs_clarification | needs_plan_review | completed | failed | cancelled
 `waiting` = paused at the approval gate; `needs_clarification` = paused at the clarify
-gate after triage, waiting for answers (shown as a waiting triage phase); the LangGraph checkpoint (a separate file,
+gate after triage, waiting for answers (shown as a waiting triage phase); `needs_plan_review`
+= paused at the plan gate after the architect (a waiting architect phase); the LangGraph checkpoint (a separate file,
 QA_CHECKPOINT_DB_PATH) holds the run until it is resumed. These are values in the
 existing TEXT columns - the schema is unchanged.
 """
@@ -223,7 +224,7 @@ class RunStore:
     def active_run_for(self, ticket_id: str) -> Optional[str]:
         with self._lock:
             row = self._db.execute(
-                "SELECT run_id FROM runs WHERE ticket_id=? AND state IN ('running', 'waiting', 'needs_clarification') LIMIT 1",
+                "SELECT run_id FROM runs WHERE ticket_id=? AND state IN ('running', 'waiting', 'needs_clarification', 'needs_plan_review') LIMIT 1",
                 (ticket_id,),
             ).fetchone()
             return row["run_id"] if row else None

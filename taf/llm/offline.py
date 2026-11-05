@@ -77,6 +77,12 @@ def _plan(state: Dict[str, Any]) -> Dict[str, Any]:
             "steps": [{"action": f"Exercise: {criterion}", "data": "",
                        "expected_result": criterion}],
         })
+    # A bugfix updates the best-matching existing test (deterministic, like the rest of this stub).
+    candidates = state.get("coverage_candidates") or []
+    if cases and state.get("action") == "update" and candidates:
+        top = candidates[0]
+        cases[0].update({"disposition": "update", "target_spec": top["spec"], "target_test": top["test"],
+                         "xray_key": top.get("xray_key") or "", "category": "regression"})
     return {
         "strategy": f"{OFFLINE_NOTICE} One functional case per acceptance criterion.",
         "in_scope": [c["summary"] for c in cases[:3]],

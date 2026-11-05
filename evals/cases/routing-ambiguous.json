@@ -1,0 +1,16 @@
+{
+  "id": "routing-ambiguous",
+  "description": "A vague ticket with no criteria and no PR. Good routing: the run stops at the clarify gate (gates on) before anything is designed.",
+  "ticket": {
+    "key": "AMB-2",
+    "summary": "Improve the itinerary PDF export",
+    "target_url": "https://app.example.test",
+    "description": "Customers say the itinerary PDF export is not great. Make it better and faster. It should also look more professional and maybe include the new branding."
+  },
+  "expect": {
+    "triage": {"min_criteria": 1},
+    "architect": {"min_cases": 1, "max_cases": 12, "min_automatable": 0, "require_traceability": false},
+    "automation": {"min_tests": 0},
+    "routing": {"gate": "clarify_gate"}
+  }
+}

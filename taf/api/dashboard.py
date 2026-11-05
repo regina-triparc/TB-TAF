@@ -154,6 +154,24 @@ def clarify(run_id: str, req: ClarifyRequest) -> Dict[str, Any]:
     return {"run_id": run_id, "action": req.action, "state": "running"}
 
 
+class PlanRequest(BaseModel):
+    action: str = Field(..., pattern="^(continue|reject)$")
+    override: Dict[str, str] = Field(default_factory=dict)
+    dispositions: Dict[str, Dict[str, str]] = Field(default_factory=dict)
+    by: str = Field("dashboard", max_length=100)
+    note: str = Field("", max_length=500)
+
+
+@router.post("/api/plan/{run_id}")
+def plan(run_id: str, req: PlanRequest) -> Dict[str, Any]:
+    """Continue (optionally overriding action, layer or dispositions) or reject a run paused at the plan gate."""
+    try:
+        stages.resume_in_background(run_id, req.model_dump())
+    except stages.StageError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+    return {"run_id": run_id, "action": req.action, "state": "running"}
+
+
 @router.get("/api/questions/{run_id}")
 def questions(run_id: str) -> Dict[str, Any]:
     """The questions a run paused at the clarify gate is waiting on."""

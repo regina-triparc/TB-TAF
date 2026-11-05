@@ -35,6 +35,10 @@ class TriageAnalysis(BaseModel):
         default=1.0, ge=0.0, le=1.0,
         description="0-1: how sure you are that the criteria above are what the ticket means.",
     )
+    change_type: str = Field(default="", description="feature | bugfix | refactor | chore")
+    action: str = Field(default="", description="create | update | extend | regression_only | skip")
+    layer: str = Field(default="", description="api | ui | both | none")
+    classification_rationale: str = Field(default="", description="One sentence: why this action and layer.")
 
 
 class TestStep(BaseModel):
@@ -52,6 +56,11 @@ class TestCase(BaseModel):
     automatable: bool = Field(description="True if this can be automated with Playwright against the target URL.")
     preconditions: str = Field(default="")
     acceptance_criteria_refs: List[str] = Field(default_factory=list, description="Which acceptance criteria this covers.")
+    disposition: Literal["new", "update", "reuse"] = Field(
+        default="new", description="new test; update an existing test; or an existing test already covers it.")
+    target_spec: str = Field(default="", description="For update / reuse: the existing spec file path.")
+    target_test: str = Field(default="", description="For update / reuse: the existing test's title.")
+    xray_key: str = Field(default="", description="For update / reuse: the existing test's Xray key, if known.")
     steps: List[TestStep] = Field(min_length=1)
 
 
@@ -62,3 +71,5 @@ class TestPlan(BaseModel):
     in_scope: List[str]
     out_of_scope: List[str] = Field(default_factory=list)
     test_cases: List[TestCase] = Field(min_length=1)
+    confidence: float = Field(default=1.0, ge=0.0, le=1.0,
+                              description="0-1: how sure you are that this plan tests what the ticket changed.")

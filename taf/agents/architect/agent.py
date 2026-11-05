@@ -16,6 +16,7 @@ from taf.integrations.jira.xray import build_xray_csv, build_xray_tests_json
 from taf.llm.router import ROUTER
 from taf.skills import skills_prompt, skills_used
 from taf.steps.clarify import clarifications_block
+from taf.steps.coverage import candidates_block
 
 SYSTEM_PROMPT = load_prompt(__file__, "prompt.md")
 
@@ -40,7 +41,7 @@ Target URL: {state.get('target_url', '')}
 ## Diff (abridged)
 ```diff
 {diff_for_prompt(state, 1 / 3, provider)}
-```{clarifications_block(state)}"""
+```{clarifications_block(state)}{candidates_block(state)}"""
 
 
 def render_test_plan_markdown(plan: TestPlan) -> str:
@@ -53,6 +54,9 @@ def render_test_plan_markdown(plan: TestPlan) -> str:
         auto = "automated" if case.automatable else "manual"
         lines += ["", f"### {case.test_id} - {case.summary}",
                   f"*{case.kind} / {case.category} / priority {case.priority} / {auto}*"]
+        if case.disposition != "new":
+            lines.append(f"**{case.disposition.capitalize()}s existing test:** `{case.target_spec}` - "
+                         f"\"{case.target_test}\"" + (f" ({case.xray_key})" if case.xray_key else ""))
         if case.preconditions:
             lines.append(f"**Preconditions:** {case.preconditions}")
         for n, step in enumerate(case.steps, start=1):
@@ -79,5 +83,6 @@ def test_architect(state: QAState) -> Dict[str, Any]:
         "test_cases": [case.model_dump() for case in plan.test_cases],
         "xray_csv_content": build_xray_csv(plan, state["ticket_id"]),
         "xray_tests_json": build_xray_tests_json(plan, state["ticket_id"]),
+        "plan_confidence": plan.confidence,
         "skills_used": skills_used(state, "architect", route.provider),
     }

@@ -125,6 +125,11 @@ def _initial_state(case: Dict[str, Any], provider: str) -> Dict[str, Any]:
         "github_diff": ticket.get("github_diff", ""),
         "environment_logs": "",
         "errors": [],
+        # Classification signals, as a Jira ticket would bring them.
+        "issue_type": ticket.get("issue_type", ""),
+        "labels": ticket.get("labels", []),
+        "linked_issues": ticket.get("linked_issues", []),
+        "pull_requests": ticket.get("pull_requests", []),
     }
     if provider:
         state["llm_provider"] = provider
@@ -184,12 +189,40 @@ def _repo_context(state: Dict[str, Any]) -> None:
         state["repo_context"] = facts
 
 
+def _existing_index(case: Dict[str, Any]) -> Dict[str, Any]:
+    """The case's existing tests (`existing_tests`: [{path, code}]) as a coverage index - no repository read."""
+    from taf.steps.coverage import index_spec
+
+    return {"specs": [index_spec(t["path"], t["code"]) for t in case.get("existing_tests") or []]}
+
+
+def routing(state: Dict[str, Any]) -> Dict[str, Any]:
+    """The decisions a full run would make for this state, with the gates on."""
+    from taf.skills import select_skills
+    from taf.steps import clarify, coverage
+
+    cls = state.get("classification") or {}
+    gate = "none"
+    if clarify.clarify_request(state)["reasons"]:
+        gate = "clarify_gate"
+    elif state.get("test_cases") and coverage.plan_reasons(state):
+        gate = "plan_gate"
+    updates = [{k: c.get(k) for k in ("test_id", "target_spec", "target_test", "xray_key")}
+               for c in state.get("test_cases") or [] if c.get("disposition") in {"update", "reuse"}]
+    return {"action": cls.get("action"), "layer": cls.get("layer"), "gate": gate,
+            "why": {"action": cls.get("rationale"), "layer": cls.get("rationale"),
+                    "gate": "; ".join(clarify.clarify_request(state)["reasons"] or coverage.plan_reasons(state))},
+            "skills": select_skills("automation", "claude", state).record["loaded"], "updates": updates}
+
+
 def run_case(case: Dict[str, Any], provider: str, last_stage: str,
              options: Optional[argparse.Namespace] = None) -> Dict[str, Any]:
     from taf.agents import automation
     from taf.agents.architect import test_architect
     from taf.agents.triage import intake_triager
     from taf.llm.budget import BUDGET
+    from taf.steps.classify import classify_ticket
+    from taf.steps.coverage import rank_candidates
     from taf.llm.router import ROUTER
     from taf.observability.tracing import TRACER
 
@@ -204,12 +237,19 @@ def run_case(case: Dict[str, Any], provider: str, last_stage: str,
                 started = time.monotonic()
                 tokens_before = BUDGET.run_usage(state["run_id"])
                 if stage == "triage":
+                    state.update(classify_ticket(state))
                     state.update(intake_triager(state))
                     checks = graders.grade_triage(state.get("triage_analysis") or {}, expect.get("triage", {}))
                 elif stage == "architect":
+                    index = _existing_index(case)
+                    state["coverage_candidates"] = rank_candidates(index, state)
                     state.update(test_architect(state))
                     criteria = (state.get("triage_analysis") or {}).get("acceptance_criteria") or []
                     checks = graders.grade_plan(state.get("test_cases") or [], expect.get("architect", {}), criteria)
+                    if index["specs"]:
+                        checks += graders.grade_suite_duplicates(
+                            state.get("test_cases") or [], [t for s in index["specs"] for t in s["titles"]],
+                            expect.get("suite_duplicates", {}))
                 else:
                     if opts.with_repo:
                         _repo_context(state)
@@ -229,6 +269,9 @@ def run_case(case: Dict[str, Any], provider: str, last_stage: str,
                             checks.append(graders.check("generated tests pass", repo["passed"],
                                                         "a pass is not proof of coverage", hard=False,
                                                         dimension="execution"))
+                if expect.get("routing") and stage == stages[-1]:
+                    result["routing"] = routing(state)
+                    checks += graders.grade_routing(result["routing"], expect["routing"])
                 if state.get("errors"):
                     checks.insert(0, graders.check("agent ran without error", False,
                                                    "; ".join(state["errors"])[:400]))

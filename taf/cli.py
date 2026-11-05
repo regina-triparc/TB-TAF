@@ -10,6 +10,7 @@ Terminal interface: `python -m taf <command>`.
     review BRANCH [--base B] review the specs a test-repo branch changes, read-only (no commit, push or approval)
     eval [options]           score agent output against evals/cases (see evals/README.md)
     xray export TICKET       import reviewed Xray test cases from the test repo (dry run unless --apply)
+    coverage report          list existing tests without an Xray key tag (traceability backfill)
     serve [--reload]         start the API + dashboard (same as `uvicorn main:app`)
 
 Runs started here are recorded in the same run store as the dashboard, so they
@@ -259,6 +260,20 @@ def _finish_run(final: Dict[str, Any], args: argparse.Namespace) -> int:
         print(f"  proceed:  python -m taf resume {final['run_id']} --proceed   (questions become risks)")
         print(f"  reject:   python -m taf resume {final['run_id']} --reject --note <why>")
         return 0
+    if run_state == "needs_plan_review":
+        request = final.get("_plan_request") or {}
+        cls = request.get("classification") or {}
+        print(f"\nPaused after the plan ({cls.get('action', '?')}/{cls.get('layer', '?')}): "
+              f"{'; '.join(request.get('reasons') or [])}.")
+        for c in request.get("candidates") or []:
+            print(f"  existing: {c['spec']} - {c['test']} (score {c['score']}: {c['reason']})")
+        for c in request.get("cases") or []:
+            target = f" -> {c['target_spec']} {c['target_test']}" if c.get("disposition") != "new" else ""
+            print(f"  {c['test_id']} [{c.get('disposition') or 'new'}]{target}: {c['summary']}")
+        print(f"  continue: python -m taf resume {final['run_id']} --approve [--override plan.json]   "
+              '(e.g. {"override": {"action": "create"}, "dispositions": {"TC-001": {"disposition": "new"}}})')
+        print(f"  reject:   python -m taf resume {final['run_id']} --reject --note <why>")
+        return 0
     if run_state == "waiting":
         request = final.get("_approval_request") or {}
         action = f"pushing {request.get('branch', '')}" if request.get("will_push") else "publishing"
@@ -295,6 +310,16 @@ def cmd_resume(args: argparse.Namespace) -> int:
                 answers = answers["answers"]
         action = "answer" if args.answers else "proceed" if args.proceed else "reject"
         decision = {"action": action, "answers": answers, "by": who, "note": args.note or ""}
+    elif request.get("kind") == "plan" and (args.approve or args.reject or args.override):
+        plan: Any = {}
+        if args.override:
+            try:
+                plan = json.loads(open(args.override, encoding="utf-8").read())
+            except (OSError, ValueError) as exc:
+                _out("fail", f"cannot read {args.override}: {exc}")
+                return 2
+        decision = {"action": "reject" if args.reject else "continue", "override": plan.get("override") or {},
+                    "dispositions": plan.get("dispositions") or {}, "by": who, "note": args.note or ""}
     elif args.approve or args.reject:
         decision = {"approved": bool(args.approve), "by": who, "note": args.note or ""}
     try:
@@ -353,6 +378,28 @@ def cmd_review(args: argparse.Namespace) -> int:
         print(to_markdown(review))
     print(f"report: {write_report(review)}")
     return 1 if review.blockers else 0
+
+
+def cmd_coverage(args: argparse.Namespace) -> int:
+    from pathlib import Path
+
+    from taf.integrations.github.repository import TEST_REPO
+    from taf.steps.coverage import build_index, untagged
+
+    root = Path(args.test_repo).resolve() if args.test_repo else TEST_REPO.path
+    if root is None or not Path(root).is_dir():
+        _out("fail", f"no test repository at {root} (TEST_REPO_LOCAL_PATH or --test-repo)")
+        return 2
+    index = build_index(Path(root))
+    missing = untagged(index)
+    tests = sum(len(s["titles"]) for s in index["specs"])
+    print(f"{len(index['specs'])} spec(s), {tests} test(s) in {root}"
+          f"{' (cached index)' if index.get('cached') else ''}")
+    print(f"{len(missing)} spec(s) with tests but no Xray key - tag them, e.g. test('...', "
+          "{ tag: '@TB-1234' }, async ({ page }) => ...):")
+    for item in missing:
+        print(f"  {item['path']}  ({item['tests']} test(s))")
+    return 0
 
 
 def cmd_eval(args: argparse.Namespace) -> int:
@@ -487,12 +534,21 @@ def build_parser() -> argparse.ArgumentParser:
                           help='clarify gate: JSON answers, {"Q1": "..."} or [{"id": "Q1", "answer": "..."}]')
     decision.add_argument("--proceed", action="store_true",
                           help="clarify gate: continue without answers; the questions are recorded as risks")
+    p.add_argument("--override", metavar="FILE",
+                   help='plan gate: JSON {"override": {"action", "layer"}, "dispositions": {"TC-001": {...}}} '
+                        "(with --approve, or alone)")
     p.add_argument("--by", help="who decided (recorded in the run, report and PR)")
     p.add_argument("--note", help="reason, recorded with the decision")
     p.add_argument("--show", nargs="+", default=["report"],
                    choices=["triage", "plan", "spec", "logs", "report", "all"], help="what to print afterwards")
     p.add_argument("--json", action="store_true", help="print the final pipeline state as JSON")
     p.set_defaults(fn=cmd_resume)
+
+    p = sub.add_parser("coverage", help="the test repo's existing coverage")
+    csub = p.add_subparsers(dest="coverage_command", required=True)
+    c = csub.add_parser("report", help="list existing tests without an Xray key tag")
+    c.add_argument("--test-repo", help="test repo path (default: TEST_REPO_LOCAL_PATH)")
+    c.set_defaults(fn=cmd_coverage)
 
     p = sub.add_parser("review", help="review the specs a test-repo branch changes (read-only: no commit, push or approval)")
     p.add_argument("branch", help="branch of the test repository, local or on origin")

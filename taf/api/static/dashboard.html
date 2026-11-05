@@ -248,6 +248,8 @@ function runLine(run) {
     return `<div class="detail">waiting for approval &middot; expand to review, then approve or reject</div>`;
   if (run.state === "needs_clarification")
     return `<div class="detail">needs clarification &middot; expand to answer the questions, then resume</div>`;
+  if (run.state === "needs_plan_review")
+    return `<div class="detail">plan needs review &middot; expand to check the plan, then continue or reject</div>`;
   return `<div class="detail">${esc(done?.detail || run.outcome || "completed")}</div>`;
 }
 
@@ -292,6 +294,41 @@ function renderSkills(s) {
     (skipped.length ? `<br><strong>Skipped:</strong> ${esc(skipped.join("; "))}` : "") + `</div>`;
 }
 
+function renderClassification(c) {
+  if (!c) return "";
+  return `<div class="kv"><strong>Classification:</strong> action <code>${esc(c.action)}</code>, layer
+      <code>${esc(c.layer)}</code>, ${esc(c.change_type || "")} &middot; ${esc(c.rationale || "")}` +
+      (c.note ? `<br>${esc(c.note)}` : "") + (c.overridden_by ? `<br>overridden by ${esc(c.overridden_by)}` : "") + `</div>`;
+}
+
+function renderPlanReview(a, detail) {
+  const r = a.plan_review || {};
+  const asking = detail?.state === "needs_plan_review";
+  const cands = (a.candidates || []).map(c => `<li><code>${esc(c.spec)}</code> &ndash; ${esc(c.test)}` +
+    (c.xray_key ? ` [${esc(c.xray_key)}]` : "") + ` &middot; score ${esc(c.score)}: ${esc(c.reason)}</li>`).join("");
+  const cov = a.coverage || {};
+  let out = section(`Existing tests (${(a.candidates || []).length} candidate(s))`,
+    `<div class="kv">${cov.available ? `${esc(cov.specs)} spec(s), ${esc(cov.tests)} test(s) indexed` +
+      (cov.cached ? " (cached)" : "") : esc(cov.reason || "no coverage lookup")}` +
+    (a.plan_confidence != null ? ` &middot; plan confidence ${esc(a.plan_confidence)}` : "") + `</div>` +
+    (cands ? `<ul>${cands}</ul>` : ""));
+  if (r.status && r.status !== "passed") {
+    const opt = (name, values, cur) => `<select data-override="${name}" data-run="${esc(detail?.run_id)}">` +
+      `<option value="">${name}: keep ${esc(cur || "")}</option>` +
+      values.map(v => `<option value="${v}">${v}</option>`).join("") + `</select>`;
+    const cls = a.classification || {};
+    out += section("Plan gate", `<div class="kv"><strong>Status:</strong> ${esc(asking ? "waiting for review" : r.status)}` +
+      ((r.reasons || []).length ? `<br><strong>Why:</strong> ${esc(r.reasons.join("; "))}` : "") +
+      (r.note ? `<br>${esc(r.note)}` : "") + `</div>` +
+      (asking ? `<div class="controls" style="margin-top:6px">
+        ${opt("action", ["create", "update", "extend", "regression_only", "skip"], cls.action)}
+        ${opt("layer", ["api", "ui", "both", "none"], cls.layer)}
+        <button class="primary" data-plan="${esc(detail.run_id)}" data-action="continue">Continue</button>
+        <button class="danger" data-plan="${esc(detail.run_id)}" data-action="reject">Reject</button></div>` : ""));
+  }
+  return out;
+}
+
 function renderTriage(a, detail) {
   return section("Triage - what it understood",
     `<div class="kv"><strong>Risk:</strong> ${esc(a.risk_level || "?")} &nbsp;
@@ -300,10 +337,10 @@ function renderTriage(a, detail) {
     section(`Risks it identified (${(a.risks || []).length})`, list(a.risks)) +
     section("Impacted areas", list(a.impacted_areas)) +
     section("Gaps and questions for the team", list(a.gaps_and_questions)) +
-    renderQuestions(a.clarify, detail) + renderSkills(a.skills);
+    renderClassification(a.classification) + renderQuestions(a.clarify, detail) + renderSkills(a.skills);
 }
 
-function renderArchitect(a) {
+function renderArchitect(a, detail) {
   const rows = (a.cases || []).map(c => `
     <tr>
       <td><strong>${esc(c.test_id)}</strong></td>
@@ -312,11 +349,12 @@ function renderArchitect(a) {
           `&bull; ${esc(s.action)} &rarr; ${esc(s.expected_result)}`).join("<br>")}</div></td>
       <td>${esc(c.priority)}</td>
       <td>${esc(c.category || c.kind || "")}</td>
-      <td>${c.automatable ? '<span class="tag auto">auto</span>' : '<span class="tag">manual</span>'}</td>
+      <td>${c.automatable ? '<span class="tag auto">auto</span>' : '<span class="tag">manual</span>'}` +
+        (c.disposition && c.disposition !== "new" ? `<div class="steps">${esc(c.disposition)}: ${esc(c.target_spec)}</div>` : "") + `</td>
     </tr>`).join("");
   return section(`Test plan - ${a.total} cases, ${a.automatable} automatable`,
     `<table class="cases"><thead><tr><th>ID</th><th>Test</th><th>Priority</th><th>Category</th><th>Mode</th></tr></thead>
-     <tbody>${rows}</tbody></table>` + renderSkills(a.skills));
+     <tbody>${rows}</tbody></table>` + renderSkills(a.skills)) + renderPlanReview(a, detail);
 }
 
 function renderAutomation(a) {
@@ -372,7 +410,7 @@ function renderPanel(detail) {
     const a = p.artifact;
     if (!a) return "";
     if (p.phase === "triage") return renderTriage(a, detail);
-    if (p.phase === "architect") return renderArchitect(a);
+    if (p.phase === "architect") return renderArchitect(a, detail);
     if (p.phase === "automation") return renderAutomation(a);
     if (p.phase === "approval") return renderApproval(a);
     if (p.phase === "publish") return renderPublish(a);
@@ -429,12 +467,12 @@ function render(data) {
   const n = s => rows.filter(r => (r.jira.status || "").toLowerCase() === s).length;
   document.getElementById("t-ready").textContent = n("ready for qa");
   document.getElementById("t-inqa").textContent = n("in qa");
-  document.getElementById("t-running").textContent = rows.filter(r => ["running", "waiting", "needs_clarification"].includes(r.run?.state)).length;
+  document.getElementById("t-running").textContent = rows.filter(r => ["running", "waiting", "needs_clarification", "needs_plan_review"].includes(r.run?.state)).length;
   document.getElementById("t-failed").textContent = rows.filter(r => r.run?.state === "failed").length;
 
   const tbody = document.getElementById("rows");
   // Don't re-render under someone typing an answer: the text and the cursor would be lost.
-  if (document.activeElement?.matches?.("textarea[data-answer]")) return;
+  if (document.activeElement?.matches?.("textarea[data-answer], select[data-override]")) return;
   if (!rows.length) {
     tbody.innerHTML = `<tr><td colspan="5" class="empty">No tickets in Ready for QA or IN QA.</td></tr>`;
     return;
@@ -442,7 +480,7 @@ function render(data) {
 
   tbody.innerHTML = rows.map(r => {
     const t = r.jira, run = r.run;
-    const running = ["running", "waiting", "needs_clarification"].includes(run?.state);
+    const running = ["running", "waiting", "needs_clarification", "needs_plan_review"].includes(run?.state);
     const disabled = running || busy.has(t.key) ? "disabled" : "";
     const buttons = STAGES.map(([id, label]) =>
       `<button ${disabled} data-ticket="${esc(t.key)}" data-stage="${id}"
@@ -455,7 +493,10 @@ function render(data) {
       : run?.state === "needs_clarification"
       ? `<button class="primary" data-expand="${esc(run.run_id)}">Answer</button>
          <button data-clarify="${esc(run.run_id)}" data-action="proceed">Proceed anyway</button>
-         <button class="danger" data-clarify="${esc(run.run_id)}" data-action="reject">Reject</button>` : "";
+         <button class="danger" data-clarify="${esc(run.run_id)}" data-action="reject">Reject</button>`
+      : run?.state === "needs_plan_review"
+      ? `<button class="primary" data-expand="${esc(run.run_id)}">Review plan</button>
+         <button class="danger" data-plan="${esc(run.run_id)}" data-action="reject">Reject</button>` : "";
     const resume = (run?.state === "failed" || run?.state === "cancelled")
       ? `<button data-resume="${esc(run.run_id)}" title="continue from the last completed step">Resume</button>` : "";
     const expanded = run && openRun === run.run_id;
@@ -511,6 +552,24 @@ document.addEventListener("click", async (ev) => {
       delete answerDrafts[runId];
       toast({ answer: "Resumed with your answers", proceed: "Resumed - questions recorded as risks",
               reject: "Rejected - the report explains why" }[action]);
+    } catch (e) { toast(e.message, true); }
+    if (openRun === runId) loadDetail(runId); else load();
+    return;
+  }
+  const planBtn = ev.target.closest("button[data-plan]");
+  if (planBtn) {
+    const runId = planBtn.dataset.plan, action = planBtn.dataset.action;
+    const override = {};
+    document.querySelectorAll(`select[data-override][data-run="${CSS.escape(runId)}"]`).forEach(s => {
+      if (s.value) override[s.dataset.override] = s.value;
+    });
+    const note = action === "reject" ? (prompt("Why is the plan rejected? (recorded with the run)") ?? "") : "";
+    try {
+      const res = await fetch("/dashboard/api/plan/" + runId, { method: "POST",
+        headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action, override, by: "dashboard", note }) });
+      const out = await res.json();
+      if (!res.ok) throw new Error(out.detail || ("HTTP " + res.status));
+      toast(action === "continue" ? "Plan accepted - continuing" : "Plan rejected - the report explains why");
     } catch (e) { toast(e.message, true); }
     if (openRun === runId) loadDetail(runId); else load();
     return;

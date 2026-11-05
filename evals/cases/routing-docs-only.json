@@ -1,0 +1,18 @@
+{
+  "id": "routing-docs-only",
+  "description": "Only docs and CI change. Good routing: action skip, layer none - nothing new to test.",
+  "ticket": {
+    "key": "DOC-50",
+    "issue_type": "Task",
+    "summary": "Document the local setup and run the linter in CI",
+    "target_url": "https://app.example.test",
+    "description": "ACCEPTANCE CRITERIA\n1. The README explains the local setup.\n2. CI runs the linter on every pull request.",
+    "github_diff": "diff --git a/README.md b/README.md\n+++ b/README.md\n@@ -1,1 +1,3 @@\n+## Local setup\ndiff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml\n+++ b/.github/workflows/ci.yml\n@@ -5,1 +5,2 @@\n+      - run: npm run lint\n"
+  },
+  "expect": {
+    "triage": {"min_criteria": 1},
+    "architect": {"min_cases": 1, "max_cases": 10, "min_automatable": 0, "require_traceability": false},
+    "automation": {"min_tests": 0},
+    "routing": {"action": "skip", "layer": "none"}
+  }
+}

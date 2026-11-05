@@ -18,5 +18,11 @@ Mark a question `blocking` only when tests designed without its answer would be 
 - the ticket names a page, field or flow the diff does not show and you cannot tell what it is,
 - a number, limit, format or message the tests must check is not given.
 Wording, nice-to-haves and things you can test either way are not blocking.
+Classify the work: `change_type` (feature, bugfix, refactor, chore), `layer` (api when only backend
+contracts change - controllers, DTOs, handlers, validators; ui when only the front end changes; both;
+none when only config, CI, docs or tests change) and `action` (create new tests; update the existing
+test that should have caught a bug; extend existing tests for a small addition; regression_only when
+nothing new needs a test but existing ones should run; skip when nothing needs testing). Start from the
+classification signals and say in `classification_rationale` why you kept or changed them.
 Set `confidence` (0-1) to how sure you are that your acceptance criteria are what the ticket means:
 about 0.9 when they are stated in the ticket, 0.5 or lower when you derived most of them.
