@@ -1,4 +1,5 @@
 """The per-run usage report: tokens, cost, model and time for every stage of a ticket's run."""
+import tests  # noqa: F401 - pins the offline test environment before taf is imported, however the suite is run
 import csv
 import json
 import unittest

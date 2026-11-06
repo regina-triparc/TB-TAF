@@ -1,4 +1,5 @@
 """Xray test cases are written to the test repo next to the spec, and exported from there."""
+import tests  # noqa: F401 - pins the offline test environment before taf is imported, however the suite is run
 import contextlib
 import io
 import json

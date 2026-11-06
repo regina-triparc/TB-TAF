@@ -1,4 +1,5 @@
 """The service starts, the dashboard serves, and runs can be started and the provider switched over HTTP."""
+import tests  # noqa: F401 - pins the offline test environment before taf is imported, however the suite is run
 import time
 import unittest
 

@@ -2,7 +2,9 @@
 Agent 4 - Report Synthesizer: raw terminal logs -> Markdown QA report.
 
 The verdict header is built in Python, so the local model can only format the log
-details and can never flip a result. If Ollama is down (or the run is offline) a
+details and can never flip a result. When the run has parsed Playwright results, the
+Results and Failures sections are built from them too; the model then writes only the
+infrastructure notes and recommendations. If Ollama is down (or the run is offline) a
 deterministic report is produced instead - the run still completes.
 """
 from __future__ import annotations
@@ -29,6 +31,17 @@ from taf.runs.usage import USAGE
 log = logging.getLogger("qa")
 
 SYSTEM_PROMPT = load_prompt(__file__, "prompt.md")
+# The prompt's Results/Failures instructions, dropped when those sections are built from parsed results.
+_RESULTS_PART_RE = re.compile(r"### Results\n.*?(?=### Infrastructure issues)", re.DOTALL)
+RESULTS_PROMPT_PART = (_RESULTS_PART_RE.search(SYSTEM_PROMPT) or [""])[0]
+RESULTS_GIVEN_NOTE = ("\nThe Results and Failures sections are already written from the parsed test results "
+                      "below - do not repeat them. Write only the other sections; use these results, not the "
+                      "log, for what passed and failed.\n\n")
+
+
+def strip_results_sections(text: str) -> str:
+    """Drop any ### Results / ### Failures section the model wrote anyway."""
+    return re.sub(r"### (Results|Failures)\b.*?(?=^### |\Z)", "", text, flags=re.DOTALL | re.MULTILINE).strip()
 
 _PW_COUNT_RE = re.compile(r"(\d+)\s+(passed|failed|flaky|skipped|did not run|interrupted)", re.IGNORECASE)
 
@@ -52,6 +65,49 @@ def fallback_report_body(state: QAState, reason: str = "Local report synthesizer
     body += ["### Failures / errors", "```", *(failure_lines or ["(none detected)"]), "```"]
     body += ["", "### Log tail", "```", logs[-4000:], "```"]
     return "\n".join(body)
+
+
+_STATUS_LABEL = {"passed": "✅ Passed", "failed": "❌ Failed", "timedOut": "❌ Timed out", "skipped": "⏭ Skipped",
+                 "interrupted": "⚠ Interrupted", "flaky": "⚠ Flaky"}
+
+
+def _cell(text: str) -> str:
+    return text.replace("|", "\\|").replace("\n", " ").strip()
+
+
+def _key_error_line(error: str) -> str:
+    """
+    The gist of a Playwright error: its first line (the failed expectation or thrown
+    message), plus the Locator / Expected / Received lines when it has them.
+    """
+    lines = [l.strip() for l in (error or "").split("Call log", 1)[0].splitlines() if l.strip()]
+    if not lines:
+        return ""
+    parts = [lines[0]]
+    for prefix in ("Locator:", "Expected", "Received", "Error: element"):
+        hit = next((l for l in lines[1:] if l.startswith(prefix)), "")
+        if hit and hit not in parts:
+            parts.append(hit)
+    return " · ".join(p[:200] for p in parts)[:500]
+
+
+def results_sections(tests: List[Dict[str, Any]]) -> str:
+    """
+    ### Results and ### Failures, built from the run's parsed Playwright results -
+    never from a model: a small local model reading a truncated log invented
+    passes and durations (TB-777: 8 failures reported as 11 passes).
+    """
+    rows = ["### Results", "| Test | Status | Duration |", "| --- | --- | --- |"]
+    failures: List[str] = []
+    for t in tests:
+        status = str(t.get("status") or "")
+        duration = f"{(t.get('duration_ms') or 0) / 1000:.1f}s"
+        rows.append(f"| {_cell(t.get('title', ''))} | {_STATUS_LABEL.get(status, status)} | {duration} |")
+        if status in {"failed", "timedOut", "interrupted"}:
+            line = _key_error_line(t.get("error") or "")
+            failures.append(f"- **{_cell(t.get('title', ''))}**" + (f"\n  `{line.replace('`', chr(39))}`" if line else ""))
+    rows += ["", "### Failures", *(failures or ["None."])]
+    return "\n".join(rows)
 
 
 @agent_node("Report Synthesizer", engine="qwen-local", abort_on_error=False)
@@ -117,14 +173,20 @@ def report_synthesizer(state: QAState) -> Dict[str, Any]:
     if errors:
         header += ["", "### Pipeline errors"] + [f"- {e}" for e in errors]
 
+    tests = (state.get("playwright") or {}).get("tests") or []
+    # With parsed results, Results/Failures are exact and the model only writes the
+    # infrastructure notes and recommendations; without them it summarises the log as before.
+    results = results_sections(tests) if tests else ""
     if not logs.strip():
-        body = "_No tests were executed in this run._"
+        body = results or "_No tests were executed in this run._"
     elif offline:
-        body = fallback_report_body(state, "Offline provider")
+        body = (results + "\n\n" if results else "") + fallback_report_body(state, "Offline provider")
     else:
         try:
+            prompt = (SYSTEM_PROMPT if not results else
+                      SYSTEM_PROMPT.replace(RESULTS_PROMPT_PART, "") + RESULTS_GIVEN_NOTE + results)
             response = ROUTER.report_model().invoke([
-                SystemMessage(content=SYSTEM_PROMPT),
+                SystemMessage(content=prompt),
                 HumanMessage(content=f"Overall verdict (authoritative): {'PASSED' if passed else 'FAILED'}\n\n"
                                      f"```\n{truncate_middle(logs, SETTINGS.max_exec_log_chars_for_llm)}\n```"),
             ], config=report_config(state))
@@ -134,12 +196,16 @@ def report_synthesizer(state: QAState) -> Dict[str, Any]:
                               provider="ollama", model=SETTINGS.ollama_model, billing_type="fixed",
                               input_tokens=local_usage.input_tokens, output_tokens=local_usage.output_tokens,
                               cost_cents=0)
-            body = message_text(response).strip() or fallback_report_body(state)
+            text = message_text(response).strip()
+            if results:
+                body = results + ("\n\n" + strip_results_sections(text) if text else "")
+            else:
+                body = text or fallback_report_body(state)
         except Exception as exc:  # noqa: BLE001 - Ollama down/timeout must not fail the run
             log.warning("[%s] Local LLM unavailable (%s) - using fallback report.", ticket_id, exc)
             CONTROL_ROOM.emit(run_id, ticket_id, "agent.log", agent="Report Synthesizer",
                               message=f"Ollama unavailable, fallback report used: {type(exc).__name__}")
-            body = fallback_report_body(state)
+            body = results or fallback_report_body(state)
 
     return {"final_report": "\n".join(header) + "\n\n" + body, "execution_passed": passed,
             "trace_url": trace_url, "report_html_path": html_path}

@@ -2,6 +2,7 @@
 Ticket classification (action, layer), the existing-coverage lookup, the plan gate
 and routing by classification.
 """
+import tests  # noqa: F401 - pins the offline test environment before taf is imported, however the suite is run
 import itertools
 import shutil
 import subprocess

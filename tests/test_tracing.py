@@ -4,6 +4,7 @@ Langfuse tracing: off without keys, harmless when Langfuse fails, masked when on
 The "real client" test runs the actual Langfuse SDK with an in-memory OpenTelemetry
 exporter instead of the network, so what would be sent can be inspected.
 """
+import tests  # noqa: F401 - pins the offline test environment before taf is imported, however the suite is run
 import dataclasses
 import json
 import time
