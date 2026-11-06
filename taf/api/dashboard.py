@@ -27,6 +27,9 @@ router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 
 _STATIC = Path(__file__).parent / "static"
 
+# A run in one of these states still needs the board's attention, even if its ticket left the queue.
+_ACTIVE_STATES = {"running", "waiting", "needs_clarification", "needs_plan_review"}
+
 
 class StartRequest(BaseModel):
     ticket_id: str = Field(..., min_length=1, max_length=64)
@@ -76,16 +79,19 @@ def board() -> JSONResponse:
         slim["has_artifacts"] = any(p.get("artifact") for p in run.get("phases", []))
         return slim
 
-    rows = [{"jira": ticket, "run": light(latest.get(ticket["key"]))} for ticket in jira["tickets"]]
+    rows = [{"jira": ticket, "run": light(latest.get(ticket["key"])), "history": False}
+            for ticket in jira["tickets"]]
 
-    # Runs for tickets that are not (or no longer) in the Jira queue still matter.
+    # Runs for tickets that are not (or no longer) in the Jira queue still matter,
+    # but finished ones are history: the page folds them away under a toggle.
     seen = {t["key"] for t in jira["tickets"]}
     for ticket_id, run in latest.items():
         if ticket_id not in seen:
             rows.append({"jira": {"key": ticket_id, "summary": run.get("summary", ""),
                                   "status": "(not in queue)", "type": "", "priority": "",
                                   "assignee": "", "updated": "", "labels": [], "url": ""},
-                         "run": light(run)})
+                         "run": light(run),
+                         "history": run.get("state") not in _ACTIVE_STATES})
 
     routes = ROUTER.routes()
     return JSONResponse({
