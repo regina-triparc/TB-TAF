@@ -1,12 +1,19 @@
 """Ticket source selection, PR discovery and diff condensing - all offline."""
+import tests  # noqa: F401 - pins the offline test environment before taf is imported, however the suite is run
+import os
+import shutil
+import tempfile
 import unittest
+from pathlib import Path
+from unittest import mock
 
 from taf.integrations.github.pull_requests import (
-    PullRequest, condense, fetch_ticket_diff, prs_from_seed, prs_from_text, repo_slug, source_repo, split_files,
+    PullRequest, SourceRepo, condense, fetch_ticket_diff, prs_from_seed, prs_from_text, repo_slug, source_repo,
+    split_files,
 )
 from taf.integrations.jira.board import get_board
 from taf.runs import stages
-from tests.support import patched_settings
+from tests.support import git, patched_settings
 
 
 def file_diff(path: str, lines: int, line: str = "+ changed line") -> str:
@@ -57,6 +64,35 @@ class PrDiscoveryTest(unittest.TestCase):
         diff, notes = fetch_ticket_diff([PullRequest(740, "o/r", "MERGED")])
         self.assertEqual(diff, "")
         self.assertTrue(any("SOURCE_REPO_URL not set" in n for n in notes))
+
+
+class BareCloneDiffTest(unittest.TestCase):
+    """PR diffs come from a bare clone; Git 2.55 refuses bare repos it has to discover."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="taf-src-"))
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        up = self.tmp / "upstream"
+        up.mkdir()
+        git(up, "init", "-q", "-b", "main")
+        (up / "app.ts").write_text("export const a = 1;\n", encoding="utf-8")
+        git(up, "add", ".")
+        git(up, "commit", "-q", "-m", "base")
+        git(up, "switch", "-q", "-c", "feature")
+        (up / "app.ts").write_text("export const a = 2;\n", encoding="utf-8")
+        git(up, "commit", "-q", "-am", "change")
+        git(up, "update-ref", "refs/pull/7/head", "HEAD")
+        git(up, "switch", "-q", "main")
+        self.repo = SourceRepo(up.as_uri(), str(self.tmp / "src.git"), "main")
+
+    def test_diff_works_with_safe_bare_repository_explicit(self):
+        explicit = {"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "safe.bareRepository",
+                    "GIT_CONFIG_VALUE_0": "explicit"}
+        with mock.patch.dict(os.environ, explicit):
+            self.repo.ensure_clone()
+            diff = self.repo.diff(7)
+        self.assertIn("diff --git a/app.ts b/app.ts", diff)
+        self.assertIn("+export const a = 2;", diff)
 
 
 class SourceSelectionTest(unittest.TestCase):

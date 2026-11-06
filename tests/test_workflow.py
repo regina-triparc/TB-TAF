@@ -2,6 +2,7 @@
 The LangGraph workflow: transitions, bounded repairs, the approval gate, resuming
 after a crash, and publishing that never repeats a side effect.
 """
+import tests  # noqa: F401 - pins the offline test environment before taf is imported, however the suite is run
 import itertools
 import unittest
 from pathlib import Path

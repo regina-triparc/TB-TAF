@@ -1,4 +1,5 @@
 """The seeded ticket goes through every stage, via the stage runner and via the full LangGraph."""
+import tests  # noqa: F401 - pins the offline test environment before taf is imported, however the suite is run
 import unittest
 import uuid
 

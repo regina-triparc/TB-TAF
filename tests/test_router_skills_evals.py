@@ -1,4 +1,5 @@
 """LLM router decisions, skill loading, Xray output and the offline eval run."""
+import tests  # noqa: F401 - pins the offline test environment before taf is imported, however the suite is run
 import os
 import unittest
 from unittest import mock

@@ -1,6 +1,7 @@
 """
 The clarify gate after triage, run-aware skill selection, and `taf review <branch>`.
 """
+import tests  # noqa: F401 - pins the offline test environment before taf is imported, however the suite is run
 import itertools
 import shutil
 import subprocess

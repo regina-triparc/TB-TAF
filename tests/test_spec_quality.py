@@ -3,6 +3,7 @@ The spec-quality additions: live UI snapshot, repair from the run (and its guard
 the per-test JSON results, the repo scanner's page-object docs, and the review rules
 that enforce the spec-authoring skill.
 """
+import tests  # noqa: F401 - pins the offline test environment before taf is imported, however the suite is run
 import itertools
 import json
 import shutil

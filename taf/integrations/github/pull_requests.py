@@ -100,7 +100,10 @@ class SourceRepo:
 
     def _git(self, *args: str, cwd: Optional[Path] = None, timeout_s: int = 300):
         env = {"GIT_TERMINAL_PROMPT": "0", "GCM_INTERACTIVE": "never"}
-        return run_command(["git", *args], cwd=cwd or self.path, timeout_s=timeout_s, env=env)
+        # Inside the bare clone, name it with --git-dir: with safe.bareRepository=explicit
+        # (the default from Git 2.55 on) git refuses to discover a bare repo from its cwd.
+        prefix = [] if cwd else [f"--git-dir={self.path}"]
+        return run_command(["git", *prefix, *args], cwd=cwd or self.path, timeout_s=timeout_s, env=env)
 
     def ensure_clone(self) -> None:
         assert self.path is not None

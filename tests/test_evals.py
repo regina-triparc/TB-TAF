@@ -1,4 +1,5 @@
 """The eval framework: graders, versioned results, comparison, and the judge's bookkeeping."""
+import tests  # noqa: F401 - pins the offline test environment before taf is imported, however the suite is run
 import contextlib
 import io
 import json
