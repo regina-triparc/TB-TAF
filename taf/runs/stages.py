@@ -3,6 +3,11 @@ Stage runner shared by the dashboard and the CLI: run the LangGraph workflow for
 one ticket - all of it or a prefix - recording every phase in the run store so the
 board shows it.
 
+A run can pause three times, each time waiting on a person: at the clarify gate
+after triage (run state `needs_clarification`, only with CLARIFY_GATE on), at the plan
+gate after the architect (`needs_plan_review`, only with PLAN_GATE on) and at the
+approval gate before publishing (`waiting`).
+
 Stages are cumulative, because each needs what the one before it produced:
     triage      -> triage
     architect   -> triage, architect
@@ -11,6 +16,7 @@ Stages are cumulative, because each needs what the one before it produced:
 
 The graph is checkpointed per run (thread id = run id), so:
   * a run paused at the approval gate is continued with `resume(run_id, decision)`,
+    one paused at the clarify gate with `resume(run_id, {"action": "answer", "answers": {...}})`,
   * a run that crashed or was cancelled is continued with `resume(run_id)`, from the
     step after the last one that completed - finished side effects are not redone.
 
@@ -33,6 +39,7 @@ from taf.llm.budget import BUDGET
 from taf.llm.router import ROUTER
 from taf.observability.tracing import TRACER
 from taf.runs.store import get_store
+from taf.steps import clarify, coverage
 from taf.runs.usage import USAGE
 from taf.steps.context import gather_diff  # noqa: F401  (re-exported: used by callers and tests)
 
@@ -44,6 +51,9 @@ STAGE_NODES: Dict[str, List[str]] = {
 }
 # The graph's `stop_after` for each stage.
 STOP_AFTER = {"triage": "triage", "architect": "architect", "automation": "automation", "full": "report"}
+
+# What a paused run's state is called, by what it waits for.
+PAUSED_STATES = {"approval": "waiting", "clarification": "needs_clarification", "plan": "needs_plan_review"}
 
 # run_id -> Event. Set means "stop before the next node".
 _CANCELS: Dict[str, threading.Event] = {}
@@ -80,6 +90,7 @@ def build_state(run_id: str, ticket_id: str, summary: str = "", description: str
         summary = summary or issue.get("summary", "")
         description = description or issue.get("description", "")
         prs = issue.get("pull_requests") or []
+    issue = issue or {}
     if not summary:
         where = "Jira" if resolved == "jira" else f"the seed file ({SETTINGS.seed_tickets_path})"
         raise StageError(f"No summary for {ticket_id}: not found in {where}. "
@@ -97,7 +108,12 @@ def build_state(run_id: str, ticket_id: str, summary: str = "", description: str
     # Frozen for the whole run: switching the default mid-run affects the next run only.
     state["llm_provider"] = provider or ROUTER.default_provider
     state["ticket_source"] = resolved
-    state["pull_requests"] = [{"number": p.number, "repo": p.repo, "status": p.status, "url": p.url} for p in prs]
+    state["pull_requests"] = [{"number": p.number, "repo": p.repo, "status": p.status, "url": p.url,
+                               **({"title": p.title} if getattr(p, "title", "") else {})} for p in prs]
+    # Classification signals (taf/steps/classify.py).
+    state["issue_type"] = str(issue.get("type") or "")
+    state["labels"] = list(issue.get("labels") or [])
+    state["linked_issues"] = list(issue.get("linked_issues") or [])
     return state
 
 
@@ -192,13 +208,58 @@ def execute(state: Dict[str, Any], stage: str, on_phase: Optional[OnPhase] = Non
     return _drive(state["run_id"], state["ticket_id"], state, on_phase, resumed=False)
 
 
-def pending_approval(run_id: str) -> Optional[Dict[str, Any]]:
-    """The approval request a paused run is waiting on, or None."""
+def pending_interrupt(run_id: str) -> Optional[Dict[str, Any]]:
+    """What a paused run is waiting on (its `kind`: approval | clarification), or None."""
     snapshot = qa_graph().get_state(thread_config(run_id))
     for task in snapshot.tasks:
         for item in task.interrupts:
-            return item.value if isinstance(item.value, dict) else {"request": item.value}
+            value = dict(item.value) if isinstance(item.value, dict) else {"request": item.value}
+            value.setdefault("kind", "approval")
+            return value
     return None
+
+
+def pending_approval(run_id: str) -> Optional[Dict[str, Any]]:
+    """The approval request a paused run is waiting on, or None."""
+    request = pending_interrupt(run_id)
+    return request if request and request["kind"] == "approval" else None
+
+
+def pending_clarification(run_id: str) -> Optional[Dict[str, Any]]:
+    """The questions a run paused at the clarify gate is waiting on, or None."""
+    request = pending_interrupt(run_id)
+    return request if request and request["kind"] == "clarification" else None
+
+
+def _check_decision(run_id: str, decision: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """A decision exactly when the run waits for one, of the kind it waits for. Raises StageError."""
+    request = pending_interrupt(run_id)
+    if request is None:
+        if decision is not None:
+            raise StageError(f"Run {run_id} is not waiting for a decision.", status_code=409)
+        return None
+    if request["kind"] == "clarification":
+        if decision is None:
+            raise StageError(f"Run {run_id} is waiting for answers to its questions: answer, proceed or reject.",
+                             status_code=409)
+        try:
+            return clarify.validate_decision(decision)
+        except ValueError as exc:
+            raise StageError(f"Run {run_id}: {exc}") from exc
+    if request["kind"] == "plan":
+        if decision is None:
+            raise StageError(f"Run {run_id} is waiting for its plan to be reviewed: continue or reject.",
+                             status_code=409)
+        try:
+            return coverage.validate_plan_decision(decision)
+        except ValueError as exc:
+            raise StageError(f"Run {run_id}: {exc}") from exc
+    if decision is None:
+        raise StageError(f"Run {run_id} is waiting for approval: approve or reject it.", status_code=409)
+    if "approved" not in decision:
+        raise StageError(f"Run {run_id} is waiting for approval, not for answers: approve or reject it.",
+                         status_code=409)
+    return decision
 
 
 def resume(run_id: str, decision: Optional[Dict[str, Any]] = None,
@@ -214,11 +275,8 @@ def resume(run_id: str, decision: Optional[Dict[str, Any]] = None,
                          status_code=404)
     if not snapshot.next:
         raise StageError(f"Run {run_id} has already finished.", status_code=409)
-    waiting = pending_approval(run_id) is not None
-    if waiting and decision is None:
-        raise StageError(f"Run {run_id} is waiting for approval: approve or reject it.", status_code=409)
-    if not waiting and decision is not None:
-        raise StageError(f"Run {run_id} is not waiting for approval.", status_code=409)
+    decision = _check_decision(run_id, decision)
+    waiting = decision is not None
     ticket_id = snapshot.values["ticket_id"]
     store = get_store()
     if store.run(run_id) is None:  # e.g. an n8n run, which the store does not track
@@ -268,12 +326,16 @@ def _drive(run_id: str, ticket_id: str, graph_input: Any, on_phase: Optional[OnP
 
             final = {**current, **dict(graph.get_state(config).values)}
             if interrupted is not None:
+                request = pending_interrupt(run_id) or {"kind": "approval"}
+                kind = request["kind"]
+                paused = PAUSED_STATES.get(kind, "waiting")
                 recorder.close("waiting")
-                store.set_run_state(run_id, "waiting")
-                final["_run_state"] = "waiting"
-                final["_approval_request"] = pending_approval(run_id)
+                store.set_run_state(run_id, paused)
+                final["_run_state"] = paused
+                final[{"clarification": "_clarify_request", "plan": "_plan_request"}.get(kind, "_approval_request")] \
+                    = request
                 final["usage_report_path"] = USAGE.write_report(run_id, "waiting", release=False)
-                root.update(output={"status": "waiting for approval"})
+                root.update(output={"status": f"waiting for {kind}"})
                 return final
             if cancelled:
                 recorder.close("cancelled")
@@ -338,9 +400,7 @@ def resume_in_background(run_id: str, decision: Optional[Dict[str, Any]]) -> Non
     snapshot = qa_graph().get_state(thread_config(run_id))
     if not snapshot.values or not snapshot.next:
         raise StageError(f"Run {run_id} cannot be resumed (no checkpoint, or already finished).", status_code=409)
-    if (pending_approval(run_id) is not None) != (decision is not None):
-        raise StageError(f"Run {run_id}: an approval decision is needed exactly when the run waits for one.",
-                         status_code=409)
+    decision = _check_decision(run_id, decision)
     threading.Thread(target=resume, args=(run_id, decision), name=f"qa-resume-{run_id[:8]}", daemon=True).start()
 
 
@@ -369,6 +429,9 @@ def phase_artifact(name: str, state: Dict[str, Any]) -> Optional[Dict[str, Any]]
             "risks": t.get("risks") or [],
             "impacted_areas": t.get("impacted_areas") or [],
             "gaps_and_questions": t.get("gaps_and_questions") or [],
+            "clarify": clarify_artifact(state),
+            "classification": state.get("classification"),
+            "skills": (state.get("skills_used") or {}).get("triage"),
             "ticket_source": state.get("ticket_source"),
             "pull_requests": state.get("pull_requests") or [],
             "context_notes": state.get("context_notes") or [],
@@ -378,6 +441,12 @@ def phase_artifact(name: str, state: Dict[str, Any]) -> Optional[Dict[str, Any]]
         return {
             "total": len(cases),
             "automatable": sum(1 for c in cases if c.get("automatable")),
+            "skills": (state.get("skills_used") or {}).get("architect"),
+            "classification": state.get("classification"),
+            "coverage": state.get("coverage"),
+            "candidates": state.get("coverage_candidates") or [],
+            "plan_confidence": state.get("plan_confidence"),
+            "plan_review": plan_review_artifact(state),
             "cases": [
                 {
                     "test_id": c.get("test_id"),
@@ -386,6 +455,9 @@ def phase_artifact(name: str, state: Dict[str, Any]) -> Optional[Dict[str, Any]]
                     "kind": c.get("kind"),
                     "category": c.get("category"),
                     "automatable": bool(c.get("automatable")),
+                    "disposition": c.get("disposition") or "new",
+                    "target_spec": c.get("target_spec") or "",
+                    "target_test": c.get("target_test") or "",
                     "steps": [
                         {"action": s_.get("action"), "data": s_.get("data"),
                          "expected_result": s_.get("expected_result")}
@@ -405,6 +477,7 @@ def phase_artifact(name: str, state: Dict[str, Any]) -> Optional[Dict[str, Any]]
             "xray_files": state.get("xray_files") or [],
             "execution_passed": bool(state.get("execution_passed")),
             "spec_attempts": state.get("spec_attempts"),
+            "skills": (state.get("skills_used") or {}).get("automation"),
             "validation": {"ok": validation.get("ok"), "skipped": validation.get("skipped"),
                            "checks": [{"name": c.get("name"), "ok": c.get("ok"), "skipped": c.get("skipped"),
                                        "detail": (c.get("detail") or "")[:800]}
@@ -426,18 +499,60 @@ def phase_artifact(name: str, state: Dict[str, Any]) -> Optional[Dict[str, Any]]
     return None
 
 
+def clarify_artifact(state: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """The clarify gate's record; while the run is paused there, the questions it asks."""
+    if not state.get("triage_analysis"):
+        return None
+    record = dict(state.get("clarify") or {})
+    if not record:
+        request = clarify.clarify_request(state)
+        paused = request["reasons"] and SETTINGS.clarify_gate and state.get("stop_after") != "triage"
+        record = {"status": "waiting" if paused else "not checked", "questions": request["questions"],
+                  "confidence": request["confidence"], "threshold": request["threshold"],
+                  "reasons": request["reasons"]}
+    record["answers"] = state.get("clarifications") or []
+    return record
+
+
+def plan_review_artifact(state: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """The plan gate's record; while the run is paused there, why it asks."""
+    if not state.get("test_cases"):
+        return None
+    record = dict(state.get("plan_review") or {})
+    if not record:
+        reasons = coverage.plan_reasons(state)
+        paused = reasons and SETTINGS.plan_gate and state.get("stop_after") != "architect"
+        record = {"status": "waiting" if paused else "not checked", "reasons": reasons}
+    return record
+
+
 def phase_detail(name: str, state: Dict[str, Any], elapsed_s: int) -> str:
     """One short human-readable line per finished phase, shown on the board."""
     if name == "triage":
         t = state.get("triage_analysis") or {}
         prs = ", ".join(f"#{p['number']}" for p in state.get("pull_requests") or []) or "no PRs"
         diff = "diff" if state.get("github_diff") else "no diff"
+        gate = state.get("clarify") or {}
+        asked = (f", {len(gate.get('questions') or [])} question(s): {gate['status']}"
+                 if gate.get("status") in {"answered", "proceeded", "rejected"} else "")
+        if not gate and state.get("triage_analysis") and SETTINGS.clarify_gate and state.get("stop_after") != "triage":
+            request = clarify.clarify_request(state)
+            asked = f", waiting for answers to {len(request['questions'])} question(s)" if request["reasons"] else ""
         return (f"{elapsed_s}s - risk {t.get('risk_level', '?')}, "
-                f"{len(t.get('acceptance_criteria') or [])} criteria ({state.get('ticket_source', '?')}; {prs}; {diff})")
+                f"{len(t.get('acceptance_criteria') or [])} criteria ({state.get('ticket_source', '?')}; {prs}; {diff})"
+                + asked)
     if name == "architect":
         cases = state.get("test_cases") or []
         auto = sum(1 for c in cases if c.get("automatable"))
-        return f"{elapsed_s}s - {len(cases)} cases, {auto} automatable"
+        reuse = sum(1 for c in cases if c.get("disposition") in {"update", "reuse"})
+        gate = (state.get("plan_review") or {}).get("status")
+        cls = state.get("classification") or {}
+        return (f"{elapsed_s}s - {len(cases)} cases, {auto} automatable"
+                + (f", {reuse} on existing tests" if reuse else "")
+                + (f" ({cls.get('action')}/{cls.get('layer')})" if cls else "")
+                + (f", plan {gate}" if gate in {"continued", "rejected"} else
+                   ", waiting for plan review" if not gate and SETTINGS.plan_gate and coverage.plan_reasons(state)
+                   and state.get("stop_after") != "architect" else ""))
     if name == "automation":
         validation = state.get("validation") or {}
         checked = ("validation skipped" if validation.get("skipped") else

@@ -25,6 +25,7 @@ from taf.agents.state import QAState
 from taf.config import SETTINGS
 from taf.core.text import truncate_middle
 from taf.llm.router import ROUTER
+from taf.steps.playwright_results import test_bodies
 
 Finding = Dict[str, str]
 
@@ -45,6 +46,19 @@ _DATE_LITERAL_RE = re.compile(
     rf"\b(?:19|20)\d{{2}}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])\b"
     rf"|\b{_MONTH}\s+\d{{1,2}}\b(?:,?\s+(?:19|20)\d{{2}}\b)?"
     rf"|\b\d{{1,2}}\s+{_MONTH}\s+(?:19|20)\d{{2}}\b")
+# The shared account's trips come and go, and trips differ in length: a spec opens the QA
+# trip with openTrip() and picks days from dayLabels(), never by name or number.
+_OPEN_TRIP_ARG_RE = re.compile(r"\bopenTrip\(\s*[^)\s]")
+_DAY_LITERAL_RE = re.compile(r"['\"`](Day \d+)\b")
+# Trip-level data (price, commission, status) on the shared trip: other runs and people change
+# it, and a fresh trip has none. Such a test is a fixme until a trip-creation helper exists.
+_TRIP_LEVEL_RE = re.compile(r"\b(priceAndCommission|tripStatus)\b")
+# Only a fixme that opens the test counts: one inside an `if` still runs the checks on other data.
+_FIXME_RE = re.compile(r"=>\s*\{\s*test\.fixme\s*\(")
+# A URL the spec assumes ('/tsp/<id>/itinerary'); comparing with a URL read from the page is fine.
+_ASSUMED_URL_RE = re.compile(r"toHaveURL\(\s*(?:/[^\n/]*\\/|['\"`](?:/|https?:))")
+# toHaveText normalises whitespace for strings, not for regexes: an anchored regex misses " Travellers ".
+_ANCHORED_TEXT_RE = re.compile(r"\bto(?:Have|Contain)Text\(\s*\[?[^;]*?/\^")
 _COMMENT_RE = re.compile(r"/\*.*?\*/|(?<![:'\"`\\])//.*?$", re.DOTALL | re.MULTILINE)
 
 
@@ -90,7 +104,32 @@ def rule_review(code: str, cases: List[Dict[str, Any]], criteria: List[str],
     if _SECRET_RE.search(code):
         out.append(finding("blocker", "no hard-coded secrets", "a credential-like literal is in the spec - "
                                                                "read it from process.env"))
-    dates = sorted(set(_DATE_LITERAL_RE.findall(_COMMENT_RE.sub("", code))))
+    uncommented = _COMMENT_RE.sub("", code)
+    if _OPEN_TRIP_ARG_RE.search(uncommented):
+        out.append(finding("blocker", "no hard-coded data",
+                           "openTrip(...) names a trip - trips on the shared account come and go; call openTrip() "
+                           "with no argument to open the QA trip the test repository configures"))
+    days = sorted(set(_DAY_LITERAL_RE.findall(uncommented)))
+    if days:
+        out.append(finding("blocker", "no hard-coded data",
+                           f"day label(s) {days[:5]} assume the trip's length - pick days from "
+                           "`await itinerary.dayLabels()`"))
+    trip_level = [tc for tc, body in test_bodies(uncommented).items()
+                  if _TRIP_LEVEL_RE.search(body) and not _FIXME_RE.search(body)]
+    if trip_level:
+        out.append(finding("blocker", "trip-level checks need their own trip",
+                           f"{', '.join(trip_level)} read price, commission or status on the shared trip - write them as "
+                           "test.fixme(true, 'needs a trip-creation setup helper (party, rooms, dates)') with the checks "
+                           "as comments"))
+    if _ASSUMED_URL_RE.search(uncommented):
+        out.append(finding("blocker", "no assumed URLs",
+                           "toHaveURL with a literal path assumes the app's routes - compare with a URL read from the "
+                           "page earlier (`const url = page.url()`), or assert on what is shown instead"))
+    if _ANCHORED_TEXT_RE.search(uncommented):
+        out.append(finding("blocker", "trimmed text",
+                           "an anchored regex (/^.../) in toHaveText/toContainText misses the whitespace around "
+                           "rendered text - use a plain string, which Playwright trims, or drop the ^ / $"))
+    dates = sorted(set(_DATE_LITERAL_RE.findall(uncommented)))
     if dates:
         out.append(finding("blocker", "no hard-coded dates",
                            f"date literal(s) {dates[:5]} only hold for one trip - read the date from the "

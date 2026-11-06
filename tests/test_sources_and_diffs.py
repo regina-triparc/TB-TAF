@@ -2,10 +2,11 @@
 import unittest
 
 from taf.integrations.github.pull_requests import (
-    PullRequest, condense, fetch_ticket_diff, prs_from_seed, prs_from_text, repo_slug, split_files,
+    PullRequest, condense, fetch_ticket_diff, prs_from_seed, prs_from_text, repo_slug, source_repo, split_files,
 )
 from taf.integrations.jira.board import get_board
 from taf.runs import stages
+from tests.support import patched_settings
 
 
 def file_diff(path: str, lines: int, line: str = "+ changed line") -> str:
@@ -23,6 +24,26 @@ class PrDiscoveryTest(unittest.TestCase):
         prs = prs_from_text("Merged in TravelEdge/TripArc.TripBuilder#740 and "
                             "https://github.com/TravelEdge/TripArc.TripBuilder/pull/764.")
         self.assertEqual([p.number for p in prs], [740, 764])
+
+    def test_prs_on_the_old_repo_move_to_triparc_platform(self):
+        new_url = "https://github.com/TripArc-Platform/TripArc.TripBuilder/pull/740"
+        by_repo = PullRequest(740, "traveledge/triparc.tripbuilder", "MERGED")
+        by_url = PullRequest(740, "", url="https://github.com/TravelEdge/TripArc.TripBuilder/pull/740")
+        stale_repo = PullRequest(740, "TravelEdge/TripArc.TripBuilder", url=new_url)
+        for pr in (by_repo, by_url, stale_repo):
+            self.assertEqual((pr.repo, pr.url), ("triparc-platform/triparc.tripbuilder", new_url))
+        self.assertEqual([p.repo for p in prs_from_text("Merged in TravelEdge/TripArc.TripBuilder#740.")],
+                         ["triparc-platform/triparc.tripbuilder"])
+
+    def test_an_old_source_repo_url_points_at_the_new_repo(self):
+        with patched_settings(source_repo_url="https://github.com/TravelEdge/TripArc.TripBuilder.git"):
+            repo = source_repo()
+        self.assertEqual(repo.url, "https://github.com/TripArc-Platform/TripArc.TripBuilder.git")
+        self.assertEqual(repo.slug, PullRequest(740, "traveledge/triparc.tripbuilder").repo)
+
+    def test_prs_on_other_repos_are_left_alone(self):
+        pr = PullRequest(12, "o/r", url="https://github.com/o/r/pull/12")
+        self.assertEqual((pr.repo, pr.url), ("o/r", "https://github.com/o/r/pull/12"))
 
     def test_prs_from_seed(self):
         prs = prs_from_seed([12, {"number": 13, "status": "DECLINED"}], "o/r")

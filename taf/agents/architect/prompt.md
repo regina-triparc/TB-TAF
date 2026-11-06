@@ -10,3 +10,7 @@ Rules:
   manual setup the automation cannot perform.
 - Use sequential IDs TC-001, TC-002, ...
 - Prefer 6-20 high-value cases over exhaustive permutations. Order by priority.
+- When existing tests are listed, do not duplicate them: mark a case `reuse` when an existing test already
+  covers it, `update` when an existing test should change (a bugfix: the test that should have caught the
+  bug), with `target_spec`, `target_test` and `xray_key` copied from the list; otherwise `new`.
+- Set `confidence` (0-1) to how sure you are that this plan tests what the ticket changed.

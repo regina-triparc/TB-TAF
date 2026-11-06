@@ -1,0 +1,24 @@
+{
+  "id": "routing-bugfix-update",
+  "description": "A bug in a screen the suite already tests. Good routing: action update, layer ui, and the plan updates the existing test (its Xray key reused) instead of adding a duplicate.",
+  "ticket": {
+    "key": "BUG-21",
+    "issue_type": "Bug",
+    "summary": "Itinerary date picker shows the wrong day after editing",
+    "target_url": "https://app.example.test",
+    "description": "After a day's date is edited in the itinerary, the date picker shows the previous day.\n\nItinerary date picker:\n\nACCEPTANCE CRITERIA\n1. After editing a day's date, the date picker shows the new date.\n2. Reopening the day keeps the edited date.",
+    "github_diff": "diff --git a/apps/trip-builder/src/app/itinerary/date-picker.component.ts b/apps/trip-builder/src/app/itinerary/date-picker.component.ts\n+++ b/apps/trip-builder/src/app/itinerary/date-picker.component.ts\n@@ -10,3 +10,3 @@\n-    this.value = previous;\n+    this.value = edited;\n"
+  },
+  "existing_tests": [
+    {"path": "e2e/itinerary/date-picker.spec.ts",
+     "code": "import { test, expect } from '@playwright/test';\nimport { ItineraryPage } from '../pages/itinerary.page';\ntest.describe('Itinerary date picker', () => {\n  test('itinerary date picker keeps the edited day', { tag: '@TB-310' }, async ({ page }) => {});\n});\n"},
+    {"path": "e2e/cart/header.spec.ts",
+     "code": "import { test } from '@playwright/test';\ntest('header cart link opens the cart', { tag: '@TB-120' }, async () => {});\n"}
+  ],
+  "expect": {
+    "triage": {"min_criteria": 2},
+    "architect": {"min_cases": 1, "max_cases": 10, "min_automatable": 1},
+    "automation": {"min_tests": 1, "forbid": ["waitForTimeout"]},
+    "routing": {"action": "update", "layer": "ui", "gate": "none", "min_updates": 1, "reuses_xray_key": "TB-310"}
+  }
+}

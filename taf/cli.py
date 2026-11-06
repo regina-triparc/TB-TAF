@@ -6,8 +6,11 @@ Terminal interface: `python -m taf <command>`.
     board                    list the queue (Jira, or the seed file when Jira is not configured)
     skills                   list skills and the agents they apply to
     run TICKET [options]     run pipeline stages for one ticket, in this process, and print what each agent did
+    resume RUN_ID [options]  continue a paused or crashed run (approve / reject, or answer the clarify gate)
+    review BRANCH [--base B] review the specs a test-repo branch changes, read-only (no commit, push or approval)
     eval [options]           score agent output against evals/cases (see evals/README.md)
     xray export TICKET       import reviewed Xray test cases from the test repo (dry run unless --apply)
+    coverage report          list existing tests without an Xray key tag (traceability backfill)
     serve [--reload]         start the API + dashboard (same as `uvicorn main:app`)
 
 Runs started here are recorded in the same run store as the dashboard, so they
@@ -199,7 +202,12 @@ def cmd_skills(_args: argparse.Namespace) -> int:
     print(f"{len(skills)} skill(s) in {SETTINGS.skills_dir}/ - enabled: {SETTINGS.skills_enabled}, "
           f"on local models: {SETTINGS.skills_on_local}")
     for s in skills:
-        print(f"  {s.name:<30} agents={','.join(s.agents) or '-':<22} {s.description}")
+        scope = " ".join(f"{k}={','.join(v)}" for k, v in (("layers", s.layers), ("actions", s.actions),
+                                                             ("triggers", s.triggers)) if v)
+        extra = f"  [{scope}{' priority=' + str(s.priority) if s.priority else ''}" \
+                f"{' references=' + str(len(s.references)) if s.references else ''}]" \
+            if scope or s.priority or s.references else ""
+        print(f"  {s.name:<30} agents={','.join(s.agents) or '-':<22} {s.description}{extra}")
     return 0
 
 
@@ -242,6 +250,30 @@ def _finish_run(final: Dict[str, Any], args: argparse.Namespace) -> int:
         _print_outputs(final, args.show)
     run_state = final.get("_run_state")
     print(f"\nrun state: {run_state}  (also on the dashboard: python -m taf serve)")
+    if run_state == "needs_clarification":
+        request = final.get("_clarify_request") or {}
+        print(f"\nPaused after triage: {'; '.join(request.get('reasons') or ['the ticket is unclear'])}.")
+        for q in request.get("questions") or []:
+            print(f"  {q['id']}{' (blocking)' if q.get('blocking') else ''}: {q['text']}")
+        print(f'  answer:   python -m taf resume {final["run_id"]} --answers answers.json   '
+              '(e.g. {"Q1": "your answer"})')
+        print(f"  proceed:  python -m taf resume {final['run_id']} --proceed   (questions become risks)")
+        print(f"  reject:   python -m taf resume {final['run_id']} --reject --note <why>")
+        return 0
+    if run_state == "needs_plan_review":
+        request = final.get("_plan_request") or {}
+        cls = request.get("classification") or {}
+        print(f"\nPaused after the plan ({cls.get('action', '?')}/{cls.get('layer', '?')}): "
+              f"{'; '.join(request.get('reasons') or [])}.")
+        for c in request.get("candidates") or []:
+            print(f"  existing: {c['spec']} - {c['test']} (score {c['score']}: {c['reason']})")
+        for c in request.get("cases") or []:
+            target = f" -> {c['target_spec']} {c['target_test']}" if c.get("disposition") != "new" else ""
+            print(f"  {c['test_id']} [{c.get('disposition') or 'new'}]{target}: {c['summary']}")
+        print(f"  continue: python -m taf resume {final['run_id']} --approve [--override plan.json]   "
+              '(e.g. {"override": {"action": "create"}, "dispositions": {"TC-001": {"disposition": "new"}}})')
+        print(f"  reject:   python -m taf resume {final['run_id']} --reject --note <why>")
+        return 0
     if run_state == "waiting":
         request = final.get("_approval_request") or {}
         action = f"pushing {request.get('branch', '')}" if request.get("will_push") else "publishing"
@@ -261,8 +293,34 @@ def cmd_resume(args: argparse.Namespace) -> int:
     from taf.runs import stages
 
     decision = None
-    if args.approve or args.reject:
-        who = args.by or os.getenv("USERNAME") or os.getenv("USER") or "cli"
+    who = args.by or os.getenv("USERNAME") or os.getenv("USER") or "cli"
+    try:
+        request = stages.pending_interrupt(args.run_id) or {}
+    except Exception:  # noqa: BLE001 - no checkpoint: stages.resume says so below
+        request = {}
+    if args.answers or args.proceed or (args.reject and request.get("kind") == "clarification"):
+        answers: Any = {}
+        if args.answers:
+            try:
+                answers = json.loads(open(args.answers, encoding="utf-8").read())
+            except (OSError, ValueError) as exc:
+                _out("fail", f"cannot read {args.answers}: {exc}")
+                return 2
+            if isinstance(answers, dict) and isinstance(answers.get("answers"), (dict, list)):
+                answers = answers["answers"]
+        action = "answer" if args.answers else "proceed" if args.proceed else "reject"
+        decision = {"action": action, "answers": answers, "by": who, "note": args.note or ""}
+    elif request.get("kind") == "plan" and (args.approve or args.reject or args.override):
+        plan: Any = {}
+        if args.override:
+            try:
+                plan = json.loads(open(args.override, encoding="utf-8").read())
+            except (OSError, ValueError) as exc:
+                _out("fail", f"cannot read {args.override}: {exc}")
+                return 2
+        decision = {"action": "reject" if args.reject else "continue", "override": plan.get("override") or {},
+                    "dispositions": plan.get("dispositions") or {}, "by": who, "note": args.note or ""}
+    elif args.approve or args.reject:
         decision = {"approved": bool(args.approve), "by": who, "note": args.note or ""}
     try:
         final = stages.resume(args.run_id, decision, on_phase=_on_phase)
@@ -300,6 +358,50 @@ def _print_outputs(state: Dict[str, Any], show: List[str]) -> None:
 
 
 # -------------------------------------------------------------------- eval --
+def cmd_review(args: argparse.Namespace) -> int:
+    from pathlib import Path
+
+    from taf.integrations.github.repository import CommandError
+    from taf.steps.branch_review import ReviewError, as_json, review_branch, to_markdown, write_report
+
+    try:
+        review = review_branch(args.branch, base=args.base or "",
+                               repo=Path(args.test_repo).resolve() if args.test_repo else None,
+                               fetch=not args.no_fetch, run=args.run, llm=args.llm, provider=args.provider,
+                               target_url=args.target_url or "")
+    except (ReviewError, CommandError) as exc:
+        _out("fail", str(exc))
+        return 2
+    if args.json:
+        print(as_json(review))
+    else:
+        print(to_markdown(review))
+    print(f"report: {write_report(review)}")
+    return 1 if review.blockers else 0
+
+
+def cmd_coverage(args: argparse.Namespace) -> int:
+    from pathlib import Path
+
+    from taf.integrations.github.repository import TEST_REPO
+    from taf.steps.coverage import build_index, untagged
+
+    root = Path(args.test_repo).resolve() if args.test_repo else TEST_REPO.path
+    if root is None or not Path(root).is_dir():
+        _out("fail", f"no test repository at {root} (TEST_REPO_LOCAL_PATH or --test-repo)")
+        return 2
+    index = build_index(Path(root))
+    missing = untagged(index)
+    tests = sum(len(s["titles"]) for s in index["specs"])
+    print(f"{len(index['specs'])} spec(s), {tests} test(s) in {root}"
+          f"{' (cached index)' if index.get('cached') else ''}")
+    print(f"{len(missing)} spec(s) with tests but no Xray key - tag them, e.g. test('...', "
+          "{ tag: '@TB-1234' }, async ({ page }) => ...):")
+    for item in missing:
+        print(f"  {item['path']}  ({item['tests']} test(s))")
+    return 0
+
+
 def cmd_eval(args: argparse.Namespace) -> int:
     from taf.config import PROJECT_ROOT
     if str(PROJECT_ROOT) not in sys.path:  # evals/ sits next to taf/, not inside it
@@ -421,17 +523,45 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--json", action="store_true", help="print the final pipeline state as JSON")
     p.set_defaults(fn=cmd_run)
 
-    p = sub.add_parser("resume", help="continue a run: approve/reject one waiting for approval, or pick up a crashed one")
+    p = sub.add_parser("resume", help="continue a run: approve/reject one waiting for approval, answer one waiting "
+                                      "at the clarify gate, or pick up a crashed one")
     p.add_argument("run_id")
     decision = p.add_mutually_exclusive_group()
     decision.add_argument("--approve", action="store_true", help="approve publishing (push / pull request)")
-    decision.add_argument("--reject", action="store_true", help="reject: nothing is published")
+    decision.add_argument("--reject", action="store_true",
+                          help="reject: nothing is published (at the clarify gate: stop and write the report)")
+    decision.add_argument("--answers", metavar="FILE",
+                          help='clarify gate: JSON answers, {"Q1": "..."} or [{"id": "Q1", "answer": "..."}]')
+    decision.add_argument("--proceed", action="store_true",
+                          help="clarify gate: continue without answers; the questions are recorded as risks")
+    p.add_argument("--override", metavar="FILE",
+                   help='plan gate: JSON {"override": {"action", "layer"}, "dispositions": {"TC-001": {...}}} '
+                        "(with --approve, or alone)")
     p.add_argument("--by", help="who decided (recorded in the run, report and PR)")
     p.add_argument("--note", help="reason, recorded with the decision")
     p.add_argument("--show", nargs="+", default=["report"],
                    choices=["triage", "plan", "spec", "logs", "report", "all"], help="what to print afterwards")
     p.add_argument("--json", action="store_true", help="print the final pipeline state as JSON")
     p.set_defaults(fn=cmd_resume)
+
+    p = sub.add_parser("coverage", help="the test repo's existing coverage")
+    csub = p.add_subparsers(dest="coverage_command", required=True)
+    c = csub.add_parser("report", help="list existing tests without an Xray key tag")
+    c.add_argument("--test-repo", help="test repo path (default: TEST_REPO_LOCAL_PATH)")
+    c.set_defaults(fn=cmd_coverage)
+
+    p = sub.add_parser("review", help="review the specs a test-repo branch changes (read-only: no commit, push or approval)")
+    p.add_argument("branch", help="branch of the test repository, local or on origin")
+    p.add_argument("--base", help="branch to diff against (default: TEST_REPO_BASE_BRANCH)")
+    p.add_argument("--test-repo", help="test repo path (default: TEST_REPO_LOCAL_PATH)")
+    p.add_argument("--no-fetch", action="store_true", help="do not fetch origin first")
+    p.add_argument("--run", action="store_true",
+                   help="also run the changed specs (the branch must be checked out, working tree clean)")
+    p.add_argument("--target-url", help="app under test for --run (default: DASHBOARD_TARGET_URL)")
+    p.add_argument("--llm", action="store_true", help="add a model review of the diff (through the router)")
+    p.add_argument("--provider", choices=LLM_PROVIDERS, help="router override for --llm")
+    p.add_argument("--json", action="store_true", help="print the review as JSON instead of Markdown")
+    p.set_defaults(fn=cmd_review)
 
     p = sub.add_parser("eval", add_help=False,
                        help="score agent output against evals/cases (`eval --help`; `eval compare A B`)")

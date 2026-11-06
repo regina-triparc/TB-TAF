@@ -56,6 +56,12 @@ evals/
 | safety_scope | rules | no Node APIs or dynamic code; nothing on out-of-scope areas |
 | typescript | test repo (`--with-repo`) | `playwright --list`, `tsc --noEmit`, ESLint |
 | execution | test repo (`--execute`) | the generated tests pass - reported, never proof of coverage |
+| routing | rules | the decisions a full run would make (gates on): action, layer, the gate it stops at, skills it loads, existing tests it updates (cases with `expect.routing`) |
+| suite_duplicates | rules | planned new cases that duplicate a test the suite already has (cases with `existing_tests`) |
+
+A case can describe the Jira side of a ticket (`issue_type`, `labels`, `linked_issues`,
+`pull_requests` with `title`) for classification, and the suite it lands in as
+`existing_tests: [{"path", "code"}]` - indexed like the real test repo, never read from disk.
 
 The judge (`--judge`) only scores what rules cannot: criteria fidelity, scenario
 relevance, scenario correctness, whether tests assert the expected results, and

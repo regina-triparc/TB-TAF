@@ -49,6 +49,22 @@ class QAState(TypedDict, total=False):
     validation: Dict[str, Any]          # deterministic checks: {"ok", "retryable", "checks": [...]}
     review: Dict[str, Any]              # {"findings": [...], "blocking": bool, "llm": {...}}
     approval: Dict[str, Any]            # {"status": approved|rejected|not_required|skipped, "by", "note"}
+    clarify: Dict[str, Any]             # clarify gate: {"status": passed|not_required|answered|proceeded|rejected,
+                                        #  "questions": [...], "confidence", "risks", "by", "note"}
+    clarifications: List[Dict[str, Any]]  # answers from the team: [{"id", "question", "answer"}]
+    issue_type: str                     # Jira issue type (Story, Bug, ...)
+    labels: List[str]                   # Jira labels
+    linked_issues: List[Dict[str, Any]]  # Jira issue links: [{"key", "type", "relation"}]
+    classification_signals: Dict[str, Any]  # taf/steps/classify.py, before triage
+    classification: Dict[str, Any]      # {"action", "layer", "change_type", "rationale", "sources", ...}
+    action: str                         # create | update | extend | regression_only | skip
+    layer: str                          # api | ui | both | none
+    coverage: Dict[str, Any]            # the test repo's coverage index: {"available", "sha", "specs", "cached"}
+    coverage_candidates: List[Dict[str, Any]]  # existing tests that may cover the ticket, ranked
+    plan_confidence: float              # the Test Architect's confidence in its plan (0-1)
+    plan_review: Dict[str, Any]         # plan gate: {"status", "reasons", "by", "note", "overrides"}
+    regression_run: Dict[str, Any]      # regression_only: the existing specs that were run, and results
+    skills_used: Dict[str, Any]         # per agent: {"loaded": [...], "skipped": [{"name", "reason"}], "references"}
     publish: Dict[str, Any]             # {"branch", "commit_sha", "pushed", "pr_url", "pr_number", ...}
     trace_url: str                      # Langfuse trace, when tracing is on
 

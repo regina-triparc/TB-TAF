@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
@@ -113,6 +113,7 @@ def report_synthesizer(state: QAState) -> Dict[str, Any]:
         header += ["", f"**Risk level:** {triage.get('risk_level', 'n/a')} - {triage.get('feature_summary', '')}"]
         if triage.get("gaps_and_questions"):
             header += ["", "**Open questions for the team:**"] + [f"- {q}" for q in triage["gaps_and_questions"]]
+    header += classification_lines(state) + clarify_lines(state) + skills_lines(state)
     if errors:
         header += ["", "### Pipeline errors"] + [f"- {e}" for e in errors]
 
@@ -142,6 +143,76 @@ def report_synthesizer(state: QAState) -> Dict[str, Any]:
 
     return {"final_report": "\n".join(header) + "\n\n" + body, "execution_passed": passed,
             "trace_url": trace_url, "report_html_path": html_path}
+
+
+def clarify_lines(state: QAState) -> List[str]:
+    """The clarify gate's outcome: answers given, questions left open, and why it paused."""
+    gate = state.get("clarify") or {}
+    if not gate.get("status"):
+        return []
+    labels = {"passed": "passed (ticket clear)", "not_required": "not asked", "answered": "answered",
+              "proceeded": "proceeded without answers", "rejected": "rejected - no tests designed"}
+    lines = ["", f"**Clarify gate:** {labels.get(gate['status'], gate['status'])}"
+             + (f" by {gate['by']}" if gate.get("by") else "")
+             + f" · triage confidence {float(gate.get('confidence', 1.0)):.2f}"
+             + (f" ({gate['note']})" if gate.get("note") else "") + "  "]
+    answers = state.get("clarifications") or []
+    if answers:
+        lines += ["", "**Answers from the team:**"] + [f"- {a['id']}: {a['question']} → {a['answer']}" for a in answers]
+    answered = {a["id"] for a in answers}
+    still_open = [q for q in gate.get("questions") or [] if q["id"] not in answered]
+    if still_open:
+        lines += ["", "**Open questions (unanswered):**"]
+        lines += [f"- {q['id']}{' (blocking)' if q.get('blocking') else ''}: {q['text']}" for q in still_open]
+    if gate.get("risks"):
+        lines += ["", "**Tested without an answer (risks):**"] + [f"- {r}" for r in gate["risks"]]
+    return lines
+
+
+def classification_lines(state: QAState) -> List[str]:
+    """Action, layer and why; the existing tests the plan builds on; the plan gate."""
+    cls = state.get("classification") or {}
+    if not cls:
+        return []
+    lines = ["", f"**Classification:** action `{cls.get('action')}`, layer `{cls.get('layer')}`, "
+                 f"{cls.get('change_type')} - {cls.get('rationale', '')}"
+             + (f" ({cls['note']})" if cls.get("note") else "")
+             + (f" - overridden by {cls['overridden_by']}" if cls.get("overridden_by") else "") + "  "]
+    if not SETTINGS.route_by_classification and cls.get("action") in {"skip", "regression_only"}:
+        lines.append(f"_ROUTE_BY_CLASSIFICATION=false: generated a new spec anyway (today's path)._  ")
+    coverage = state.get("coverage") or {}
+    if coverage.get("available"):
+        lines.append(f"**Existing coverage:** {coverage.get('specs', 0)} spec(s), {coverage.get('tests', 0)} test(s) "
+                     f"indexed; {len(state.get('coverage_candidates') or [])} candidate(s) shown to the architect  ")
+    on_existing = [c for c in state.get("test_cases") or [] if c.get("disposition") in {"update", "reuse"}]
+    if on_existing:
+        lines += ["", "**Cases on existing tests:**"]
+        lines += [f"- {c['test_id']} {c['disposition']}s `{c.get('target_spec')}` - {c.get('target_test')}"
+                  + (f" ({c['xray_key']})" if c.get("xray_key") else "") for c in on_existing]
+    review = state.get("plan_review") or {}
+    if review.get("status") and review["status"] != "passed":
+        lines.append(f"**Plan gate:** {review['status']}" + (f" by {review['by']}" if review.get("by") else "")
+                     + (f" - {'; '.join(review.get('reasons') or [])}" if review.get("reasons") else "") + "  ")
+    run = state.get("regression_run") or {}
+    if run:
+        lines.append("**Regression run (existing specs):** " + (f"skipped - {run['skipped']}" if run.get("skipped")
+                     else f"{', '.join(run.get('specs') or [])} - {'passed' if run.get('passed') else 'did not pass'}")
+                     + "  ")
+    return lines
+
+
+def skills_lines(state: QAState) -> List[str]:
+    """Skills each agent was given, and the ones left out with the reason."""
+    used = state.get("skills_used") or {}
+    if not used:
+        return []
+    lines = ["", "**Skills:**"]
+    for agent, record in used.items():
+        loaded = ", ".join(record.get("loaded") or []) or "none"
+        refs = f"; references: {', '.join(record['references'])}" if record.get("references") else ""
+        skipped = "; ".join(f"{s['name']} ({s['reason']})" for s in record.get("skipped") or [])
+        lines.append(f"- {agent}: {loaded}{refs}" + (f" - skipped: {skipped}" if skipped else ""))
+    return lines
 
 
 def report_config(state: QAState) -> Dict[str, Any]:

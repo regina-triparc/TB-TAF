@@ -93,6 +93,19 @@ def _simplify(issue: Dict[str, Any], base_url: str) -> Dict[str, Any]:
     }
 
 
+def linked_issues(fields: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """The issue's links as [{"key", "type", "relation"}] (a classification signal: linked bugs)."""
+    out = []
+    for link in fields.get("issuelinks") or []:
+        for side in ("inwardIssue", "outwardIssue"):
+            other = link.get(side)
+            if other:
+                relation = (link.get("type") or {}).get("inward" if side == "inwardIssue" else "outward") or ""
+                out.append({"key": other.get("key", ""), "relation": relation,
+                            "type": ((other.get("fields") or {}).get("issuetype") or {}).get("name") or ""})
+    return out
+
+
 class JiraBoard:
     """Polls one JQL query, caches the result for `poll_seconds`."""
 
@@ -188,7 +201,7 @@ class JiraBoard:
         try:
             resp = requests.get(
                 f"{cfg.base_url}/rest/api/3/issue/{key}",
-                params={"fields": "summary,description,status,issuetype,priority,assignee"},
+                params={"fields": "summary,description,status,issuetype,priority,assignee,labels,issuelinks"},
                 auth=self._auth(),
                 headers={"Accept": "application/json"},
                 timeout=cfg.timeout,
@@ -199,6 +212,7 @@ class JiraBoard:
             data = resp.json()
             out = _simplify(data, cfg.base_url)
             out["description"] = adf_to_text((data.get("fields") or {}).get("description"))
+            out["linked_issues"] = linked_issues(data.get("fields") or {})
             out["pull_requests"] = self.pull_requests(data.get("id", "")) or prs_from_text(out["description"])
             return out
         except requests.RequestException as exc:
@@ -232,7 +246,8 @@ class JiraBoard:
                         found = prs_from_text(url)
                         if found:
                             prs.append(PullRequest(number=found[0].number, repo=found[0].repo,
-                                                   status=str(pr.get("status", "")), url=url))
+                                                   status=str(pr.get("status", "")), url=url,
+                                                   title=str(pr.get("name") or "")))
             return prs
         except (requests.RequestException, ValueError) as exc:
             LOG.warning("Jira development panel unavailable for issue %s: %s", issue_id, exc)

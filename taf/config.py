@@ -43,6 +43,18 @@ def env_int(name: str, default: int) -> int:
         return default
 
 
+def env_float(name: str, default: float) -> float:
+    """Read a float env var, falling back to `default` on missing/invalid values."""
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        logging.getLogger("qa.config").warning("Invalid number for %s=%r, using %s", name, raw, default)
+        return default
+
+
 def env_bool(name: str, default: bool) -> bool:
     """Read a boolean env var ("1", "true", "yes", "on" are truthy)."""
     raw = os.getenv(name, "").strip().lower()
@@ -133,12 +145,14 @@ class Settings:
     skip_dependency_install: bool = field(default_factory=lambda: env_bool("SKIP_DEPENDENCY_INSTALL", False))
     # Markdown file of REAL roles/names captured from the app under test.
     page_contract_path: str = field(default_factory=lambda: env_str("PAGE_CONTRACT_PATH"))
-    # Live accessibility snapshot of the app, taken before the spec is written
-    # (taf/steps/ui_snapshot.py). The recipe defaults to the page contract's
-    # `<name>.snapshot.json`; the step skips itself when the recipe or the saved
-    # session is missing.
+    # Live UI exploration of the app, before the spec is written (taf/steps/ui_snapshot.py).
+    # Nothing app-specific is configured: the explorer opens one item from the start page
+    # (the first data row whose name matches LIVE_EXPLORE_ENTRY, else the first data row)
+    # and clicks what the ticket talks about, up to LIVE_EXPLORE_BUDGET clicks. Skips itself
+    # when the saved session is missing.
     live_snapshot_enabled: bool = field(default_factory=lambda: env_bool("LIVE_SNAPSHOT_ENABLED", True))
-    live_snapshot_recipe: str = field(default_factory=lambda: env_str("LIVE_SNAPSHOT_RECIPE"))
+    live_explore_entry: str = field(default_factory=lambda: env_str("LIVE_EXPLORE_ENTRY"))
+    live_explore_budget: int = field(default_factory=lambda: env_int("LIVE_EXPLORE_BUDGET", 12))
     live_snapshot_max_chars: int = field(default_factory=lambda: env_int("LIVE_SNAPSHOT_MAX_CHARS", 12_000))
     live_snapshot_timeout_s: int = field(default_factory=lambda: env_int("LIVE_SNAPSHOT_TIMEOUT_SECONDS", 420))
     # Repairs driven by the Playwright run itself (taf/steps/run_repair.py): failing
@@ -152,6 +166,31 @@ class Settings:
     qa_checkpoint_db_path: str = field(default_factory=lambda: env_str("QA_CHECKPOINT_DB_PATH", "qa_checkpoints.db"))
     # Pause before anything leaves the machine (push / pull request) until a person approves.
     require_approval: bool = field(default_factory=lambda: env_bool("REQUIRE_APPROVAL", True))
+    # Pause after triage when the ticket is unclear (taf/steps/clarify.py): a blocking
+    # question, or triage confidence below CLARIFY_THRESHOLD. Off by default: the
+    # questions are still computed and listed in the report, the run just does not stop.
+    clarify_gate: bool = field(default_factory=lambda: env_bool("CLARIFY_GATE", False))
+    clarify_threshold: float = field(default_factory=lambda: env_float("CLARIFY_THRESHOLD", 0.7))
+    # Ticket classification (taf/steps/classify.py): an action (create, update, extend,
+    # regression_only, skip) and a layer (api, ui, both, none), always recorded. Off: every
+    # ticket still takes today's path (a new spec); on: skip goes to the report and
+    # regression_only runs the matching existing specs instead of generating one.
+    route_by_classification: bool = field(default_factory=lambda: env_bool("ROUTE_BY_CLASSIFICATION", False))
+    # Diff paths that make a change an API change (globs, comma-separated).
+    classify_api_globs: str = field(default_factory=lambda: env_str(
+        "CLASSIFY_API_GLOBS", "*Controller.cs,*/Controllers/*,*Dto.cs,*/Dtos/*,*/DTOs/*,*Handler.cs,*/Handlers/*,"
+                              "*Validator.cs,*/Validators/*"))
+    # Diff paths that need no new test: config, CI, docs, the tests themselves.
+    classify_none_globs: str = field(default_factory=lambda: env_str(
+        "CLASSIFY_NONE_GLOBS", "*.md,docs/*,.github/*,*.yml,*.yaml,*.spec.ts,*.test.ts,*/tests/*,*.Tests/*,"
+                               "*Tests.cs,.editorconfig,.gitignore,*.csproj,*.sln,Dockerfile,*.dockerignore"))
+    # Existing-test lookup before the plan (taf/steps/coverage.py) and the plan gate after it.
+    coverage_max_candidates: int = field(default_factory=lambda: env_int("COVERAGE_MAX_CANDIDATES", 8))
+    coverage_match_threshold: float = field(default_factory=lambda: env_float("COVERAGE_MATCH_THRESHOLD", 0.3))
+    # Pause after the plan when its confidence is below PLAN_CONFIDENCE_THRESHOLD, or an update
+    # has no existing test to update. Off by default: the reasons are only reported.
+    plan_gate: bool = field(default_factory=lambda: env_bool("PLAN_GATE", False))
+    plan_confidence_threshold: float = field(default_factory=lambda: env_float("PLAN_CONFIDENCE_THRESHOLD", 0.6))
     # Open a pull request in the test repository after an approved push. Needs GITHUB_TOKEN
     # (pull requests: read and write) or a signed-in GitHub CLI (gh).
     pr_create_enabled: bool = field(default_factory=lambda: env_bool("PR_CREATE_ENABLED", False))

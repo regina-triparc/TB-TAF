@@ -56,6 +56,7 @@ def approval_request(state: QAState) -> Dict[str, Any]:
     validation = state.get("validation") or {}
     review = state.get("review") or {}
     return {
+        "kind": "approval",
         "ticket_id": state["ticket_id"],
         "spec": f"{SETTINGS.test_spec_dir.strip('/')}/{state['ticket_id']}.spec.ts",
         "branch": f"qa/{state['ticket_id']}",

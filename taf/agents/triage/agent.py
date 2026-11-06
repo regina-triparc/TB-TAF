@@ -14,7 +14,8 @@ from taf.core.text import truncate_middle
 from taf.integrations.github.pull_requests import diff_for_prompt
 from taf.integrations.paperclip.control_room import CONTROL_ROOM
 from taf.llm.router import ROUTER
-from taf.skills import skills_prompt
+from taf.skills import skills_prompt, skills_used
+from taf.steps.classify import capped_confidence, reconcile, signals_prompt
 
 SYSTEM_PROMPT = load_prompt(__file__, "prompt.md")
 
@@ -40,13 +41,13 @@ def build_prompt(state: QAState, provider: str = "claude") -> str:
 ## Azure / DB logs
 ```
 {env_logs}
-```"""
+```{signals_prompt(state)}"""
 
 
 @agent_node("Intake Triager", engine="llm", abort_on_error=True, route_key="triage")
 def intake_triager(state: QAState) -> Dict[str, Any]:
     route = ROUTER.route("triage", state.get("llm_provider"))
-    system = SYSTEM_PROMPT + skills_prompt("triage", route.provider)
+    system = SYSTEM_PROMPT + skills_prompt("triage", route.provider, state)
     analysis = ROUTER.structured(
         state, route,
         [SystemMessage(content=system), ROUTER.context_message(route, build_prompt(state, route.provider))],
@@ -54,4 +55,9 @@ def intake_triager(state: QAState) -> Dict[str, Any]:
     )
     CONTROL_ROOM.emit(state["run_id"], state["ticket_id"], "triage.completed",
                       risk_level=analysis.risk_level, criteria=len(analysis.acceptance_criteria))
-    return {"triage_analysis": analysis.model_dump()}
+    triage = analysis.model_dump()
+    classification = reconcile(state, triage)
+    triage["confidence"] = capped_confidence(triage, classification)
+    return {"triage_analysis": triage, "classification": classification,
+            "action": classification["action"], "layer": classification["layer"],
+            "skills_used": skills_used(state, "triage", route.provider)}

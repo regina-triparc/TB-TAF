@@ -1,0 +1,23 @@
+{
+  "id": "routing-ui-only",
+  "description": "Only a front-end template changes. Good routing: layer ui, action create, and no planned case duplicates the suite's existing tests.",
+  "ticket": {
+    "key": "UI-40",
+    "issue_type": "Story",
+    "summary": "Info card shows the service's start time",
+    "target_url": "https://app.example.test",
+    "description": "ACCEPTANCE CRITERIA\n1. Each Info card in the itinerary shows the service's start time.\n2. A service without a start time shows no time label.",
+    "github_diff": "diff --git a/apps/trip-builder/src/app/services/info-card.component.html b/apps/trip-builder/src/app/services/info-card.component.html\n+++ b/apps/trip-builder/src/app/services/info-card.component.html\n@@ -3,1 +3,2 @@\n+  <span class=\"time\">{{ service.startTime }}</span>\n"
+  },
+  "existing_tests": [
+    {"path": "e2e/cart/header.spec.ts",
+     "code": "import { test } from '@playwright/test';\ntest('header cart link opens the cart', { tag: '@TB-120' }, async () => {});\n"}
+  ],
+  "expect": {
+    "triage": {"min_criteria": 2},
+    "architect": {"min_cases": 1, "max_cases": 10, "min_automatable": 1},
+    "automation": {"min_tests": 1, "forbid": ["waitForTimeout"]},
+    "suite_duplicates": {"hard": true},
+    "routing": {"action": "create", "layer": "ui", "gate": "none"}
+  }
+}

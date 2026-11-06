@@ -1,0 +1,18 @@
+{
+  "id": "routing-api-only",
+  "description": "Only backend contracts change (a controller and a DTO). Good routing: layer api.",
+  "ticket": {
+    "key": "API-30",
+    "issue_type": "Story",
+    "summary": "Trips endpoint returns the trip currency",
+    "target_url": "https://app.example.test",
+    "description": "ACCEPTANCE CRITERIA\n1. GET /api/trips/{id} returns a currency field with the trip's ISO 4217 code.\n2. A trip without a currency returns null for the field.",
+    "github_diff": "diff --git a/src/TripBuilder.Api/Controllers/TripsController.cs b/src/TripBuilder.Api/Controllers/TripsController.cs\n+++ b/src/TripBuilder.Api/Controllers/TripsController.cs\n@@ -40,2 +40,3 @@\n+            Currency = trip.Currency,\ndiff --git a/src/TripBuilder.Api/Dtos/TripDto.cs b/src/TripBuilder.Api/Dtos/TripDto.cs\n+++ b/src/TripBuilder.Api/Dtos/TripDto.cs\n@@ -8,2 +8,3 @@\n+    public string? Currency { get; set; }\n"
+  },
+  "expect": {
+    "triage": {"min_criteria": 2},
+    "architect": {"min_cases": 1, "max_cases": 10, "min_automatable": 1},
+    "automation": {"min_tests": 1, "forbid": ["waitForTimeout"]},
+    "routing": {"action": "create", "layer": "api", "gate": "none"}
+  }
+}

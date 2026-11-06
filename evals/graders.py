@@ -18,6 +18,9 @@ agents' output, never a model, so the same output always gets the same score.
     safety_scope    no Node APIs or dynamic code, nothing outside the ticket's scope
     typescript      compiles / lints / loads in the test repository (--with-repo)
     execution       the generated tests pass (--execute) - not proof of coverage
+    routing         the decisions the pipeline made: action, layer, the gate it would stop at
+                    (gates on), which skills it would load
+    suite_duplicates  planned new cases that duplicate a test the suite already has
 """
 from __future__ import annotations
 
@@ -170,6 +173,47 @@ def grade_spec(code: str, expect: Dict[str, Any], cases: List[Dict[str, Any]] = 
     for module in expect.get("reuse", []):
         checks.append(check(f"reuses {module!r}", module in code, hard=False, dimension="conventions"))
     return checks
+
+
+def grade_routing(routing: Dict[str, Any], expect: Dict[str, Any]) -> List[Check]:
+    """The pipeline's decisions for the ticket, against what the case expects."""
+    checks = []
+    for key in ("action", "layer", "gate"):
+        if key in expect:
+            want = expect[key] if isinstance(expect[key], list) else [expect[key]]
+            checks.append(check(f"routing: {key}", routing.get(key) in want,
+                                f"{routing.get(key)!r}, expected {' or '.join(map(repr, want))}"
+                                + (f" ({routing['why'].get(key)})" if routing.get("why", {}).get(key) else ""),
+                                dimension="routing"))
+    loaded = set(routing.get("skills") or [])
+    for name in expect.get("skills_loaded", []):
+        checks.append(check(f"routing: loads skill {name!r}", name in loaded, f"loaded: {sorted(loaded)}",
+                            dimension="routing"))
+    for name in expect.get("skills_not_loaded", []):
+        checks.append(check(f"routing: skips skill {name!r}", name not in loaded, f"loaded: {sorted(loaded)}",
+                            dimension="routing"))
+    if "min_updates" in expect:
+        updates = routing.get("updates") or []
+        checks.append(check("routing: updates existing tests", len(updates) >= expect["min_updates"],
+                            f"{len(updates)} case(s) update an existing test, need >= {expect['min_updates']}",
+                            dimension="routing"))
+    if expect.get("reuses_xray_key"):
+        keys = {u.get("xray_key") for u in routing.get("updates") or []}
+        checks.append(check("routing: reuses the Xray key", expect["reuses_xray_key"] in keys,
+                            f"keys on updated cases: {sorted(k for k in keys if k)}", dimension="routing"))
+    return checks
+
+
+def grade_suite_duplicates(cases: List[Dict[str, Any]], existing_titles: List[str],
+                           expect: Dict[str, Any]) -> List[Check]:
+    """New cases that duplicate a test the suite already has (the coverage index)."""
+    threshold = expect.get("similarity", 0.6)
+    dupes = [(c.get("test_id"), t) for c in cases if (c.get("disposition") or "new") == "new"
+             for t in existing_titles if _similar(c.get("summary", ""), t, threshold)]
+    return [check("no duplicates of existing tests", not dupes,
+                  f"new cases matching existing tests: {dupes[:5]}" if dupes else
+                  f"{len(cases)} case(s) vs {len(existing_titles)} existing test(s)",
+                  hard=expect.get("hard", False), dimension="suite_duplicates")]
 
 
 def grade_repo_checks(results: List[Dict[str, Any]]) -> List[Check]:
