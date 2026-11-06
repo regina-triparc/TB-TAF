@@ -92,10 +92,10 @@ def _parse_reference(path: Path) -> Reference:
                      body=body)
 
 
-def _parse(path: Path) -> Skill:
+def _parse(path: Path, default_agents: Tuple[str, ...] = (), default_priority: int = 0) -> Skill:
     meta, body = _front_matter(path.read_text(encoding="utf-8"))
     try:
-        priority = int((meta.get("priority") or "0").split(" #", 1)[0])
+        priority = int((meta.get("priority") or str(default_priority)).split(" #", 1)[0])
     except ValueError:
         priority = 0
     references = []
@@ -106,23 +106,52 @@ def _parse(path: Path) -> Skill:
             log.warning("Skipping skill reference %s: %s", ref, exc)
     return Skill(name=meta.get("name") or path.parent.name,
                  description=meta.get("description", ""),
-                 agents=_list(meta, "agents"), body=body, path=path,
+                 agents=_list(meta, "agents") or default_agents, body=body, path=path,
                  layers=_list(meta, "layers"), actions=_list(meta, "actions"),
                  triggers=_list(meta, "triggers", lower=False), priority=priority,
                  references=tuple(references))
 
 
+# Skills from the test repo are Claude Code skills: no `agents:` line, and they are the
+# project's own rules for the specs TAF writes there, so they go to the automation agent
+# (unless they name their agents) and load before TAF's generic skills.
+TEST_REPO_SKILL_AGENTS = ("automation",)
+TEST_REPO_SKILL_PRIORITY = 50
+
+
+def test_repo_skills_dir() -> Optional[Path]:
+    """<TEST_REPO_LOCAL_PATH>/.claude/skills, when enabled and present."""
+    if not SETTINGS.skills_from_test_repo or not SETTINGS.test_repo_local_path:
+        return None
+    root = Path(SETTINGS.test_repo_local_path).expanduser() / ".claude" / "skills"
+    return root if root.is_dir() else None
+
+
 def load_skills() -> List[Skill]:
-    """Every skills/*/SKILL.md, sorted by folder. Unreadable files are skipped with a warning."""
-    root = project_path(SETTINGS.skills_dir)
-    if not root.is_dir():
-        return []
-    skills = []
-    for path in sorted(root.glob("*/SKILL.md")):
-        try:
-            skills.append(_parse(path))
-        except (OSError, ValueError) as exc:
-            log.warning("Skipping skill %s: %s", path, exc)
+    """
+    Every skills/*/SKILL.md, sorted by folder, then the test repo's .claude/skills/*/SKILL.md.
+    A test-repo skill whose name TAF already has is skipped. Unreadable files are skipped
+    with a warning.
+    """
+    sources: List[Tuple[Path, Dict[str, Any]]] = [(project_path(SETTINGS.skills_dir), {})]
+    extra = test_repo_skills_dir()
+    if extra:
+        sources.append((extra, {"default_agents": TEST_REPO_SKILL_AGENTS,
+                                "default_priority": TEST_REPO_SKILL_PRIORITY}))
+    skills: List[Skill] = []
+    for root, defaults in sources:
+        if not root.is_dir():
+            continue
+        for path in sorted(root.glob("*/SKILL.md")):
+            try:
+                skill = _parse(path, **defaults)
+            except (OSError, ValueError) as exc:
+                log.warning("Skipping skill %s: %s", path, exc)
+                continue
+            if any(s.name == skill.name for s in skills):
+                log.warning("Skipping skill %s: a skill named %r is already loaded", path, skill.name)
+                continue
+            skills.append(skill)
     return skills
 
 
