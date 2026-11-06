@@ -185,6 +185,8 @@ class SkillSelectionTest(unittest.TestCase):
         (self.root / name / "SKILL.md").write_text(f"---\nname: {name}\n{front}\n---\n{body}\n", encoding="utf-8")
 
     def select(self, state, provider="claude", **settings):
+        # Only this fixture's skills, never the real test repo's.
+        settings.setdefault("skills_from_test_repo", False)
         with patched_settings(skills_dir=str(self.root), **settings):
             return select_skills("automation", provider, state)
 
@@ -226,6 +228,42 @@ class SkillSelectionTest(unittest.TestCase):
         with patched_settings(skills_dir=str(self.root)):
             used = skills_used({"skills_used": {"triage": {"loaded": ["x"]}}}, "automation", "claude")
         self.assertEqual(set(used), {"triage", "automation"})
+
+
+class TestRepoSkillsTest(unittest.TestCase):
+    """The test repo's own .claude/skills apply to the specs TAF writes there."""
+
+    def setUp(self):
+        self.taf = Path(tempfile.mkdtemp(prefix="taf-skills-"))
+        self.repo = Path(tempfile.mkdtemp(prefix="taf-testrepo-"))
+        for d in (self.taf, self.repo):
+            self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        self.write(self.taf / "generic", "name: generic\nagents: automation", "Generic rules.")
+        claude = self.repo / ".claude" / "skills"
+        # A Claude Code skill: no agents line.
+        self.write(claude / "tsp-firm-trip", "name: tsp-firm-trip\ndescription: TSP specs", "Create a Firm trip.")
+        self.write(claude / "generic", "name: generic", "Shadowed by TAF's own.")
+
+    @staticmethod
+    def write(folder, front, body):
+        folder.mkdir(parents=True)
+        (folder / "SKILL.md").write_text(f"---\n{front}\n---\n{body}\n", encoding="utf-8")
+
+    def select(self, agent="automation", **settings):
+        with patched_settings(skills_dir=str(self.taf), test_repo_local_path=str(self.repo), **settings):
+            return select_skills(agent, "claude", {})
+
+    def test_loaded_for_automation_first(self):
+        sel = self.select()
+        self.assertEqual(sel.record["loaded"], ["tsp-firm-trip", "generic"])
+        self.assertIn("Create a Firm trip.", sel.prompt)
+        self.assertNotIn("Shadowed", sel.prompt)
+
+    def test_not_for_other_agents(self):
+        self.assertEqual(self.select("triage").record["loaded"], [])
+
+    def test_can_be_turned_off(self):
+        self.assertEqual(self.select(skills_from_test_repo=False).record["loaded"], ["generic"])
 
 
 # ----------------------------------------------------------------- review --

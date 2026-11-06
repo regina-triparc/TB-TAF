@@ -10,6 +10,12 @@ skills/
   page-contracts/            app-specific selector maps, loaded via PAGE_CONTRACT_PATH (not skills)
 ```
 
+The test repo's own Claude Code skills, `<TEST_REPO_LOCAL_PATH>/.claude/skills/*/SKILL.md`,
+load too (turn off with `SKILLS_FROM_TEST_REPO=false`). Keep repo-specific rules there, next
+to the code they describe, so Claude Code in that repo and TAF follow the same rule. Without
+an `agents:` line they go to the automation agent, at priority 50, so they load before TAF's
+generic skills. A test-repo skill with the same `name` as one here is skipped.
+
 ## Format
 
 ```markdown
