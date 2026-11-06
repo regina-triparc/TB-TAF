@@ -118,7 +118,10 @@ class Settings:
     # Off by default on local models: a small context window fills fast, and the
     # Ollama setup was tuned without them.
     skills_on_local: bool = field(default_factory=lambda: env_bool("SKILLS_ON_LOCAL", False))
-    skills_max_chars: int = field(default_factory=lambda: env_int("SKILLS_MAX_CHARS", 12_000))
+    skills_max_chars: int = field(default_factory=lambda: env_int("SKILLS_MAX_CHARS", 24_000))
+    # Also load the test repo's own Claude Code skills (<TEST_REPO_LOCAL_PATH>/.claude/skills),
+    # so rules written for that repo apply to specs TAF generates there.
+    skills_from_test_repo: bool = field(default_factory=lambda: env_bool("SKILLS_FROM_TEST_REPO", True))
 
     # --- TypeScript test repository ----------------------------------------
     github_token: str = field(default_factory=lambda: env_str("GITHUB_TOKEN"))
